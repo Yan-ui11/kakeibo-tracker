@@ -626,6 +626,16 @@
    * まとめて保存する。行ごとに保存ボタンを押す手間をなくすため、入力画面には
    * この1つの「まとめて保存」ボタンだけを置く(現金へ反映=精算は別のボタンとして残す)。
    */
+  function setSaveInFlightControlsDisabled(disabled) {
+    // 保存の往復中(数秒〜十数秒)に月を切り替えられると、後続のPOSTが別の月に書き込まれてしまう。
+    // 精算(現金へ反映)も、保存中の行と同じ残高行を同時に書き換えうるため、あわせて止める。
+    // 月ナビは再有効化時、境界(先月24ヶ月前/来月まで)に応じた正しいdisabled状態に戻す必要があるため、
+    // ここでは一律trueにするだけにして、falseへの戻しはupdateMonthNavButtons()に任せる。
+    document.getElementById('month-prev').disabled = disabled;
+    document.getElementById('month-next').disabled = disabled;
+    document.querySelectorAll('.settle-btn').forEach(function (btn) { btn.disabled = disabled; });
+  }
+
   async function saveAllChanges() {
     const button = document.getElementById('save-all-button');
     const messageEl = document.getElementById('save-all-message');
@@ -636,15 +646,17 @@
     rows.forEach(function (rowEl) {
       const categoryType = rowEl.getAttribute('data-category-type');
       const input = rowEl.querySelector('.amount-input');
-      const savedAmountRaw = rowEl.getAttribute('data-saved-amount');
+      const savedAmountRaw = rowEl.getAttribute('data-saved-amount') || '';
+      // 未編集の行は検証すらしない。シートを手編集した結果、他の行の値が万一パース不能に
+      // なっていても、それだけで「まとめて保存」全体が使えなくなる事故を避けるため。
+      if (input.value.trim() === savedAmountRaw) return;
       const parsed = parseAmountInput(input.value, allowsNegativeInput(categoryType));
       if (!parsed.ok) {
         invalid.push(rowEl.getAttribute('data-category-name'));
         return;
       }
       const normalizedCurrent = parsed.value === '' ? '' : String(parsed.value);
-      const normalizedSaved = savedAmountRaw === null ? '' : savedAmountRaw;
-      if (normalizedCurrent === normalizedSaved) return; // 変更なしの行は送らない
+      if (normalizedCurrent === savedAmountRaw) return; // 全角/カンマの書き直しなどで実質変更なし
       changed.push({ rowEl: rowEl, categoryId: rowEl.getAttribute('data-category-id'), value: parsed.value });
     });
 
@@ -659,31 +671,58 @@
       return;
     }
 
+    // 保存対象の月をここで固定する。保存中にユーザーが月を送っても、この一括保存は
+    // 開始時点の月にだけ書き込む(DISPLAY_MONTHを毎回参照すると誤った月に書き込まれる)。
+    const targetMonth = DISPLAY_MONTH;
     button.disabled = true;
+    setSaveInFlightControlsDisabled(true);
     messageEl.textContent = '保存中…';
     messageEl.className = 'message';
+
+    let successCount = 0;
+    let failedNames = [];
     try {
       for (const c of changed) {
-        // 既存の機械生成メモ(仮入力タグ・精算由来メモ)はユーザーが実際に保存した時点で消す。
-        // それ以外(ユーザーがシートに直接書いたメモ等)は保存のたびに空文字で潰さず引き継ぐ。
-        const existingMemo = c.rowEl.getAttribute('data-saved-memo') || '';
-        const memoToSend = isMachineGeneratedMemo(existingMemo) ? '' : existingMemo;
-        await apiPost({
-          action: 'upsertEntry',
-          categoryId: c.categoryId,
-          month: DISPLAY_MONTH,
-          amount: c.value,
-          memo: memoToSend
-        });
+        try {
+          // 既存の機械生成メモ(仮入力タグ・精算由来メモ)はユーザーが実際に保存した時点で消す。
+          // それ以外(ユーザーがシートに直接書いたメモ等)は保存のたびに空文字で潰さず引き継ぐ。
+          const existingMemo = c.rowEl.getAttribute('data-saved-memo') || '';
+          const memoToSend = isMachineGeneratedMemo(existingMemo) ? '' : existingMemo;
+          await apiPost({
+            action: 'upsertEntry',
+            categoryId: c.categoryId,
+            month: targetMonth,
+            amount: c.value,
+            memo: memoToSend
+          });
+          successCount++;
+        } catch (e) {
+          failedNames.push(c.rowEl.getAttribute('data-category-name'));
+        }
       }
-      await refreshRows(changed.map(function (c) { return c.categoryId; }));
-      messageEl.textContent = changed.length + '件保存しました';
-      messageEl.className = 'message ok';
-    } catch (e) {
-      messageEl.textContent = '保存に失敗しました: ' + e.message;
-      messageEl.className = 'message error';
     } finally {
+      setSaveInFlightControlsDisabled(false);
+      updateMonthNavButtons(); // 元のdisabled状態(月の境界)を再計算し直す
       button.disabled = false;
+    }
+
+    if (failedNames.length > 0) {
+      messageEl.textContent = successCount + '件保存しました(失敗: ' + failedNames.join('、') + ')';
+      messageEl.className = 'message error';
+    } else {
+      messageEl.textContent = successCount + '件保存しました';
+      messageEl.className = 'message ok';
+    }
+
+    // 保存中に月が切り替えられていたら、今表示している月とは違う月を更新したことになるので
+    // 今の画面には反映しない(誤って別の月の値で上書き表示するのを防ぐ)
+    if (DISPLAY_MONTH === targetMonth && successCount > 0) {
+      try {
+        await refreshRows(changed.filter(function (c) { return failedNames.indexOf(c.rowEl.getAttribute('data-category-name')) === -1; })
+          .map(function (c) { return c.categoryId; }));
+      } catch (e) {
+        messageEl.textContent += '(表示の更新に失敗しました。再読み込みしてください)';
+      }
     }
   }
   document.getElementById('save-all-button').addEventListener('click', saveAllChanges);
@@ -807,6 +846,20 @@
       }
       defaultValue = parsed.value;
     }
+    // カテゴリ追加後は一覧を丸ごと再取得するため、他の行にまだ「まとめて保存」していない
+    // 入力が残っていると無警告で消えてしまう。追加前に一声かける。
+    const hasUnsavedChanges = [...document.querySelectorAll('.cat-row')].some(function (rowEl) {
+      const input = rowEl.querySelector('.amount-input');
+      const savedAmountRaw = rowEl.getAttribute('data-saved-amount') || '';
+      return input.value.trim() !== savedAmountRaw;
+    });
+    if (hasUnsavedChanges && !confirm(
+      '他のカテゴリに未保存の入力があります。カテゴリを追加すると、その入力は消えます。\n' +
+      '先に「まとめて保存」してから追加することをおすすめします。このまま追加しますか？'
+    )) {
+      return;
+    }
+
     button.disabled = true;
     messageEl.textContent = '追加中…';
     messageEl.className = 'message';
