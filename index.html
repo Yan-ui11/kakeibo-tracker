@@ -1,0 +1,952 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>家計簿トラッカー</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg-from: #eef1f8;
+    --bg-to: #dfe6f3;
+    --glass-bg: rgba(255, 255, 255, 0.38);
+    --glass-bg-strong: rgba(255, 255, 255, 0.62);
+    --glass-border: rgba(255, 255, 255, 0.55);
+    --glass-highlight: rgba(255, 255, 255, 0.85);
+    --glass-shadow: rgba(30, 41, 80, 0.16);
+    --text: #1c1c1e;
+    --text-dim: #6e6e73;
+    --accent: #0a84ff;
+    --danger: #d81b26;
+    --income: #1c1c1e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-from: #0b0d14;
+      --bg-to: #16192a;
+      --glass-bg: rgba(40, 42, 54, 0.42);
+      --glass-bg-strong: rgba(50, 52, 66, 0.68);
+      --glass-border: rgba(255, 255, 255, 0.14);
+      --glass-highlight: rgba(255, 255, 255, 0.22);
+      --glass-shadow: rgba(0, 0, 0, 0.45);
+      --text: #f2f2f7;
+      --text-dim: #98989d;
+      --danger: #ff6b6b;
+      --income: #f2f2f7;
+    }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    :root {
+      --glass-bg: #eef0f5;
+      --glass-bg-strong: #ffffff;
+      --glass-border: #c8cbd6;
+      --glass-highlight: transparent;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --glass-bg: #202230;
+        --glass-bg-strong: #2a2c3c;
+        --glass-border: #3c3f52;
+      }
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    padding: 24px 16px calc(28px + env(safe-area-inset-bottom));
+    background:
+      radial-gradient(1200px 600px at 20% -10%, rgba(120, 160, 255, 0.25), transparent),
+      radial-gradient(1000px 500px at 100% 10%, rgba(255, 150, 220, 0.14), transparent),
+      linear-gradient(180deg, var(--bg-from), var(--bg-to));
+    background-attachment: fixed;
+    color: var(--text);
+    font: 100%/1.5 -apple-system, system-ui, "Hiragino Sans", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-align: center;
+    margin: 4px 0 20px;
+    color: var(--text-dim);
+  }
+
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    box-shadow:
+      inset 0 1px 0 var(--glass-highlight),
+      0 8px 24px var(--glass-shadow);
+  }
+
+  .segment {
+    position: relative;
+    display: flex;
+    border-radius: 14px;
+    padding: 4px;
+    margin-bottom: 22px;
+  }
+  .segment button {
+    flex: 1;
+    position: relative;
+    z-index: 1;
+    border: none;
+    background: transparent;
+    padding: 10px 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    border-radius: 10px;
+    transition: color 250ms ease;
+  }
+  .segment button.active { color: var(--text); }
+  .segment .indicator {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 4px;
+    width: calc(50% - 4px);
+    border-radius: 10px;
+    background: var(--glass-bg-strong);
+    border: 1px solid var(--glass-border);
+    box-shadow:
+      inset 0 1px 0 var(--glass-highlight),
+      0 4px 14px var(--glass-shadow);
+    backdrop-filter: blur(18px) saturate(200%);
+    -webkit-backdrop-filter: blur(18px) saturate(200%);
+    transition: transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .segment .indicator.right { transform: translateX(100%); }
+  @media (prefers-reduced-motion: reduce) {
+    .segment .indicator { transition: opacity 150ms ease; }
+  }
+
+  .panel { display: none; }
+  .panel.visible { display: block; animation: fade 220ms ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) {
+    .panel.visible { animation: none; }
+  }
+
+  .card {
+    border-radius: 20px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+
+  /* 月セレクタ */
+  .month-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .month-nav button {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg-strong);
+    color: var(--text);
+    font-size: 1.1rem;
+  }
+  .month-nav button:disabled { opacity: 0.35; }
+  .month-nav .month-label { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; }
+
+  /* カテゴリグループ */
+  .group-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.02em;
+    margin: 18px 4px 8px;
+  }
+  .group-title:first-child { margin-top: 2px; }
+
+  .cat-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--glass-border);
+  }
+  .cat-row:last-child { border-bottom: none; }
+  .cat-main { flex: 1; min-width: 0; }
+  .cat-name { font-weight: 600; font-size: 0.92rem; }
+  .cat-name.type-expense { color: var(--danger); }
+  .cat-name.type-income { color: var(--income); }
+  .cat-name.type-balance { color: var(--accent); }
+  .cat-freshness { display: block; font-size: 0.7rem; color: var(--text-dim); margin-top: 2px; }
+  .cat-freshness.provisional { color: var(--accent); font-weight: 600; }
+  .cat-input-wrap { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .amount-input {
+    width: 108px;
+    padding: 9px 10px;
+    font-size: 0.95rem;
+    text-align: right;
+    border-radius: 10px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg-strong);
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .save-btn {
+    padding: 9px 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: none;
+    border-radius: 10px;
+    transition: transform 100ms ease-out;
+  }
+  .save-btn:active { transform: scale(0.95); }
+  .save-btn:disabled { opacity: 0.5; }
+  .settle-btn {
+    padding: 9px 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--danger);
+    background: var(--glass-bg-strong);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    transition: transform 100ms ease-out;
+  }
+  .settle-btn:active { transform: scale(0.95); }
+  .settle-btn:disabled { opacity: 0.4; }
+  .cat-row { flex-wrap: wrap; }
+  .cat-row .cat-input-wrap { flex-wrap: wrap; justify-content: flex-end; }
+
+  .add-cat-toggle {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 10px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: transparent;
+    border: 1px dashed var(--glass-border);
+    border-radius: 12px;
+  }
+  .add-cat-form { margin-top: 10px; display: none; }
+  .add-cat-form.visible { display: block; }
+  .add-cat-form .field { margin-bottom: 10px; }
+  .add-cat-form label { display: block; font-size: 0.78rem; color: var(--text-dim); margin-bottom: 5px; }
+  .add-cat-form input[type="text"], .add-cat-form select {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 0.92rem;
+    border-radius: 10px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg-strong);
+    color: var(--text);
+  }
+  .add-cat-form .checkbox-field { display: flex; align-items: center; gap: 8px; }
+  .add-cat-form .checkbox-field label { margin: 0; }
+
+  .primary-button {
+    width: 100%;
+    padding: 14px;
+    margin-top: 4px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #fff;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 100%, white 10%), var(--accent));
+    border: 1px solid color-mix(in srgb, var(--accent) 60%, white 10%);
+    border-radius: 14px;
+    box-shadow: 0 8px 20px rgba(10, 132, 255, 0.35);
+    transition: transform 100ms ease-out;
+  }
+  .primary-button:active { transform: scale(0.97); }
+  .primary-button:disabled { opacity: 0.5; box-shadow: none; }
+
+  .message { margin-top: 10px; text-align: center; font-size: 0.85rem; min-height: 1.2em; }
+  .message.error { color: var(--danger); }
+  .message.ok { color: var(--accent); }
+
+  .empty-state { text-align: center; color: var(--text-dim); padding: 20px 0; font-size: 0.85rem; }
+
+  /* 見返し画面 */
+  .review-section-title { font-size: 0.85rem; font-weight: 700; color: var(--text-dim); margin: 0 0 10px; }
+  .trend-svg { width: 100%; height: auto; display: block; }
+  .single-point { text-align: center; font-size: 1rem; font-weight: 700; padding: 20px 0; }
+
+  .bar-row { display: flex; align-items: center; gap: 8px; font-size: 0.75rem; margin-bottom: 6px; }
+  .bar-label { width: 64px; flex-shrink: 0; color: var(--text-dim); }
+  .bar-track { flex: 1; height: 14px; background: var(--glass-bg-strong); border-radius: 7px; overflow: hidden; }
+  .bar-fill { height: 100%; }
+  .bar-fill.bar-positive { background: var(--accent); }
+  .bar-fill.bar-negative { background: var(--danger); }
+  .bar-value { width: 84px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .bar-value.bar-negative { color: var(--danger); }
+  .bar-provisional-note { font-size: 0.68rem; color: var(--accent); margin: 2px 0 6px; }
+
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 12px; }
+  table.pivot { border-collapse: collapse; width: 100%; font-size: 0.78rem; }
+  table.pivot th, table.pivot td {
+    padding: 8px 10px;
+    text-align: right;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--glass-border);
+  }
+  table.pivot th:first-child, table.pivot td:first-child {
+    text-align: left;
+    position: sticky;
+    left: 0;
+    background: var(--glass-bg-strong);
+  }
+  table.pivot thead th { color: var(--text-dim); font-weight: 600; }
+  table.pivot td.type-expense { color: var(--danger); }
+  table.pivot td.type-balance { color: var(--accent); font-weight: 700; }
+  table.pivot td.provisional { opacity: 0.6; font-style: italic; }
+  table.pivot tr.netflow-row td { font-weight: 700; border-top: 2px solid var(--glass-border); }
+  table.pivot tr.netflow-row td.netflow-negative { color: var(--danger); }
+  table.pivot tr.netflow-row td.provisional { opacity: 0.6; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>家計簿トラッカー</h1>
+
+<div class="segment glass">
+  <div class="indicator" id="segment-indicator"></div>
+  <button type="button" class="active" id="tab-input">入力</button>
+  <button type="button" id="tab-review">見返し</button>
+</div>
+
+<section id="panel-input" class="panel visible card glass">
+  <div class="month-nav">
+    <button type="button" id="month-prev" disabled>◀</button>
+    <div class="month-label" id="month-label">—</div>
+    <button type="button" id="month-next" disabled>▶</button>
+  </div>
+  <div id="category-groups"><div class="empty-state">読み込み中…</div></div>
+
+  <button type="button" class="add-cat-toggle" id="add-cat-toggle">＋ カテゴリを追加</button>
+  <div class="add-cat-form" id="add-cat-form">
+    <div class="field">
+      <label for="add-cat-name">カテゴリ名</label>
+      <input type="text" id="add-cat-name" placeholder="例：交際費">
+    </div>
+    <div class="field">
+      <label for="add-cat-type">種別</label>
+      <select id="add-cat-type">
+        <option value="収入">収入(黒)</option>
+        <option value="支出">支出(赤)</option>
+        <option value="差引">差引(収支どちらもありうる・符号込みで入力)</option>
+        <option value="残高">残高(実測値そのもの)</option>
+      </select>
+    </div>
+    <div class="field checkbox-field">
+      <input type="checkbox" id="add-cat-autocarry">
+      <label for="add-cat-autocarry">毎月ほぼ一定額なので前月の実額を自動で繰り越す(家賃など)</label>
+    </div>
+    <div class="field">
+      <label for="add-cat-default">デフォルト値(任意・未入力時に毎月この額を仮置きする。楽天カードなど)</label>
+      <input type="text" inputmode="numeric" pattern="[0-9]*" id="add-cat-default" placeholder="例：250000">
+    </div>
+    <button type="button" class="primary-button" id="add-cat-submit">追加する</button>
+    <div class="message" id="add-cat-message"></div>
+  </div>
+</section>
+
+<section id="panel-review" class="panel card glass">
+  <div class="review-section-title">残高(現在の現金)の推移</div>
+  <div id="balance-trend"><div class="empty-state">読み込み中…</div></div>
+
+  <div class="review-section-title" style="margin-top:20px;">月次収支(収入−支出)</div>
+  <div id="netflow-bars"><div class="empty-state">読み込み中…</div></div>
+
+  <div class="review-section-title" style="margin-top:20px;">カテゴリ別一覧</div>
+  <div id="pivot-table"><div class="empty-state">読み込み中…</div></div>
+</section>
+
+<script>
+  // GASのWeb App URL。デプロイIDが変わったらここを更新する(clasp deploy -i で同一IDを維持していれば変更不要)
+  const API_BASE = 'https://script.google.com/macros/s/AKfycbyeezJJT-oYpJqoDuTqkHjkDGjYH3QS7pMU38dmDa70JdrImM2k4f_KoATRVWDfXH7Z/exec';
+
+  // ---- API ----
+  async function parseApiResponse(res) {
+    let json;
+    try {
+      json = await res.json();
+    } catch (e) {
+      throw new Error('サーバー応答が不正です(GASの一時的なエラーの可能性があります)');
+    }
+    if (!json.ok) throw new Error(json.error || '不明なエラー');
+    return json.data;
+  }
+  async function apiGet(action, params) {
+    let url = API_BASE + '?action=' + encodeURIComponent(action);
+    if (params) {
+      for (const key in params) {
+        if (params[key] !== undefined && params[key] !== null) {
+          url += '&' + encodeURIComponent(key) + '=' + encodeURIComponent(params[key]);
+        }
+      }
+    }
+    const res = await fetch(url);
+    return parseApiResponse(res);
+  }
+  async function apiPost(body) {
+    const res = await fetch(API_BASE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body)
+    });
+    return parseApiResponse(res);
+  }
+
+  // ---- ユーティリティ ----
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+  function addMonths(monthStr, delta) {
+    const parts = monthStr.split('-');
+    const y = Number(parts[0]), m = Number(parts[1]);
+    const d = new Date(y, m - 1 + delta, 1);
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1);
+  }
+  function formatMonthLabel(monthStr) {
+    const parts = monthStr.split('-');
+    return parts[0] + '年' + Number(parts[1]) + '月';
+  }
+  function shortMonthLabel(monthStr) {
+    const parts = monthStr.split('-');
+    return Number(parts[1]) + '月';
+  }
+  function formatYen(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return '—';
+    const rounded = Math.round(n);
+    const abs = Math.abs(rounded);
+    return (rounded < 0 ? '-¥' : '¥') + abs.toLocaleString('ja-JP');
+  }
+  function freshnessText(updatedAtMs) {
+    if (!updatedAtMs) return '未入力';
+    const diffMs = Date.now() - updatedAtMs;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return '最終更新: たった今';
+    if (diffMin < 60) return '最終更新: ' + diffMin + '分前';
+    const diffHour = Math.floor(diffMin / 60);
+    if (diffHour < 24) return '最終更新: ' + diffHour + '時間前';
+    const diffDay = Math.floor(diffHour / 24);
+    return '最終更新: ' + diffDay + '日前';
+  }
+  function typeClass(type) {
+    if (type === '支出') return 'type-expense';
+    if (type === '残高') return 'type-balance';
+    return 'type-income';
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  // バックエンドの自動入力(autoFillMissingEntries_)が付けるメモタグ。
+  // これが付いている値はユーザーがまだ確認・確定していない「仮置き」であることを示す。
+  function isProvisionalMemo(memo) {
+    return memo === '(既定値)' || memo === '(自動繰越)';
+  }
+  function provisionalLabel(memo) {
+    if (memo === '(既定値)') return ' ・仮入力(既定値)';
+    if (memo === '(自動繰越)') return ' ・仮入力(自動繰越)';
+    return '';
+  }
+  // 仮入力タグに加えて、settleEntryが書く精算由来メモ"(精算: ...)"も機械生成メモとして扱う。
+  // ユーザーが実際に保存し直した時点で、これらは事実と食い違う古い注記になるため消してよい。
+  function isMachineGeneratedMemo(memo) {
+    return isProvisionalMemo(memo) || /^\(精算: /.test(memo || '');
+  }
+  // 全角数字・全角マイナス・カンマを正規化してから数値として扱う(日本語キーボードでの入力に配慮)
+  function normalizeNumericInput(raw) {
+    return raw
+      .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+      .replace(/[－−ー―‐]/g, '-')
+      .replace(/,/g, '')
+      .trim();
+  }
+  // 金額入力欄の文字列を検証する。空文字は「クリア」として許可(ok:true, value:'')。
+  // allowNegativeは差引・残高種別のときだけtrue(それ以外は整数かつ0以上のみ許可)。
+  function parseAmountInput(raw, allowNegative) {
+    if (raw.trim() === '') return { ok: true, value: '' };
+    const normalized = normalizeNumericInput(raw);
+    const pattern = allowNegative ? /^-?\d+$/ : /^\d+$/;
+    if (!pattern.test(normalized)) return { ok: false };
+    return { ok: true, value: Number(normalized) };
+  }
+
+  // ---- 状態 ----
+  let SERVER_CURRENT_MONTH = null; // サーバーが判定した「今月」。ページ読み込み時に一度だけ取得する
+  let DISPLAY_MONTH = null;        // 入力画面で現在表示中の月
+
+  const MONTH_LOOKBACK = 24; // 過去何ヶ月まで遡って表示・入力できるか
+  const MONTH_LOOKAHEAD = 1; // 未来何ヶ月まで先取り入力を許すか(締め日が翌月にずれ込む対策)
+
+  // ---- タブ切替 ----
+  function showTab(name) {
+    const isInput = name === 'input';
+    document.getElementById('tab-input').classList.toggle('active', isInput);
+    document.getElementById('tab-review').classList.toggle('active', !isInput);
+    document.getElementById('panel-input').classList.toggle('visible', isInput);
+    document.getElementById('panel-review').classList.toggle('visible', !isInput);
+    document.getElementById('segment-indicator').classList.toggle('right', !isInput);
+    if (!isInput) loadReview();
+  }
+  document.getElementById('tab-input').addEventListener('click', function () { showTab('input'); });
+  document.getElementById('tab-review').addEventListener('click', function () { showTab('review'); });
+
+  // ---- 入力画面 ----
+  function updateMonthNavButtons() {
+    const minMonth = addMonths(SERVER_CURRENT_MONTH, -MONTH_LOOKBACK);
+    const maxMonth = addMonths(SERVER_CURRENT_MONTH, MONTH_LOOKAHEAD);
+    document.getElementById('month-prev').disabled = DISPLAY_MONTH <= minMonth;
+    document.getElementById('month-next').disabled = DISPLAY_MONTH >= maxMonth;
+    document.getElementById('month-label').textContent = formatMonthLabel(DISPLAY_MONTH);
+  }
+
+  // 差引(収支どちらもありうる)と残高(実測値。精算でマイナスにもなりうる)だけ負数を許可する。
+  // 収入・支出は常に0以上。
+  function allowsNegativeInput(type) {
+    return type === '差引' || type === '残高';
+  }
+
+  function buildCategoryRowHtml(r) {
+    const displayAmount = r.amount === null || r.amount === undefined ? '' : r.amount;
+    const savedAmountAttr = r.amount === null || r.amount === undefined ? '' : r.amount;
+    // 差引・残高は実際の符号で色を変える。収入・支出は種別固定の色。
+    const rowTypeClass = allowsNegativeInput(r.type)
+      ? (typeof r.amount === 'number' && r.amount < 0 ? 'type-expense' : typeClass(r.type))
+      : typeClass(r.type);
+    // 支出カテゴリで既に金額が保存済みのときだけ「現金へ反映」ボタンを出す。
+    // 実際に引き落とされたタイミングで押すと、現在の現金からこの金額を差し引いて、この欄を空に戻す。
+    const showSettleButton = r.type === '支出' && typeof r.amount === 'number';
+    const provisional = isProvisionalMemo(r.memo);
+    // 差引・残高はiOSの純粋な数字キーパッド(マイナス記号がない)ではなくフルキーボードを出す
+    const inputAttrs = allowsNegativeInput(r.type) ? 'inputmode="text"' : 'inputmode="numeric" pattern="[0-9]*"';
+    return '' +
+      '<div class="cat-row" data-category-id="' + escapeHtml(r.categoryId) + '" data-category-name="' + escapeHtml(r.name) + '"' +
+        ' data-category-type="' + escapeHtml(r.type) + '" data-saved-amount="' + escapeHtml(savedAmountAttr) + '"' +
+        ' data-saved-memo="' + escapeHtml(r.memo || '') + '">' +
+        '<div class="cat-main">' +
+          '<span class="cat-name ' + rowTypeClass + '">' + escapeHtml(r.name) + '</span>' +
+          '<span class="cat-freshness' + (provisional ? ' provisional' : '') + '">' +
+            freshnessText(r.updatedAtMs) + provisionalLabel(r.memo) + '</span>' +
+        '</div>' +
+        '<div class="cat-input-wrap">' +
+          '<input type="text" ' + inputAttrs + ' class="amount-input" value="' + escapeHtml(displayAmount) + '">' +
+          '<button type="button" class="save-btn">保存</button>' +
+          (showSettleButton ? '<button type="button" class="settle-btn">現金へ反映</button>' : '') +
+        '</div>' +
+      '</div>';
+  }
+
+  function bindCategoryRow(rowEl) {
+    const categoryId = rowEl.getAttribute('data-category-id');
+    const categoryName = rowEl.getAttribute('data-category-name');
+    const categoryType = rowEl.getAttribute('data-category-type');
+    const input = rowEl.querySelector('.amount-input');
+    const saveButton = rowEl.querySelector('.save-btn');
+    saveButton.addEventListener('click', function () { saveEntry(categoryId, categoryType, input, rowEl); });
+    const settleButton = rowEl.querySelector('.settle-btn');
+    if (settleButton) {
+      settleButton.addEventListener('click', function () { settleEntryClick(categoryId, categoryName, input, settleButton, rowEl); });
+    }
+  }
+
+  function renderCategoryGroups(rows) {
+    const container = document.getElementById('category-groups');
+    if (!rows || rows.length === 0) {
+      container.innerHTML = '<div class="empty-state">カテゴリがありません</div>';
+      return;
+    }
+    const groupOrder = ['残高', '収入', '支出', '差引'];
+    const groupLabels = { '残高': '残高', '収入': '収入', '支出': '支出', '差引': '差引(収支どちらも)' };
+    let html = '';
+    groupOrder.forEach(function (type) {
+      const groupRows = rows.filter(function (r) { return r.type === type; });
+      if (groupRows.length === 0) return;
+      html += '<div class="group-title">' + escapeHtml(groupLabels[type]) + '</div>';
+      groupRows.forEach(function (r) { html += buildCategoryRowHtml(r); });
+    });
+    container.innerHTML = html;
+    container.querySelectorAll('.cat-row').forEach(bindCategoryRow);
+  }
+
+  /**
+   * 1行だけをサーバーの最新値で更新する(全体を再描画すると、他の行にまだ保存していない
+   * 入力中の値があった場合にそれを無警告で消してしまうため)。精算ボタンの出現/消失、
+   * 鮮度表示、仮入力ラベル、data-saved-*属性をまとめて最新化する。
+   */
+  function updateRowDom(r) {
+    const rowEl = document.querySelector('.cat-row[data-category-id="' + CSS.escape(r.categoryId) + '"]');
+    if (!rowEl) return;
+    const input = rowEl.querySelector('.amount-input');
+    const displayAmount = r.amount === null || r.amount === undefined ? '' : r.amount;
+    input.value = displayAmount;
+    rowEl.setAttribute('data-saved-amount', displayAmount === '' ? '' : String(displayAmount));
+    rowEl.setAttribute('data-saved-memo', r.memo || '');
+
+    // 差引・残高は符号によって色が変わるため、保存し直した後も追随させる
+    const nameEl = rowEl.querySelector('.cat-name');
+    const rowTypeClass = allowsNegativeInput(r.type)
+      ? (typeof r.amount === 'number' && r.amount < 0 ? 'type-expense' : typeClass(r.type))
+      : typeClass(r.type);
+    nameEl.className = 'cat-name ' + rowTypeClass;
+
+    const provisional = isProvisionalMemo(r.memo);
+    const freshnessEl = rowEl.querySelector('.cat-freshness');
+    freshnessEl.textContent = freshnessText(r.updatedAtMs) + provisionalLabel(r.memo);
+    freshnessEl.classList.toggle('provisional', provisional);
+
+    const wrap = rowEl.querySelector('.cat-input-wrap');
+    let settleButton = rowEl.querySelector('.settle-btn');
+    const shouldShowSettle = r.type === '支出' && typeof r.amount === 'number';
+    if (shouldShowSettle && !settleButton) {
+      settleButton = document.createElement('button');
+      settleButton.type = 'button';
+      settleButton.className = 'settle-btn';
+      settleButton.textContent = '現金へ反映';
+      settleButton.addEventListener('click', function () { settleEntryClick(r.categoryId, r.name, input, settleButton, rowEl); });
+      wrap.appendChild(settleButton);
+    } else if (!shouldShowSettle && settleButton) {
+      settleButton.remove();
+    }
+  }
+
+  /** 保存/精算の後、指定した複数カテゴリをサーバーから取り直してDOMを更新する(1回のfetchで済ませる)。 */
+  async function refreshRows(categoryIds) {
+    const data = await apiGet('monthValues', { month: DISPLAY_MONTH });
+    categoryIds.forEach(function (categoryId) {
+      const rowData = data.rows.find(function (r) { return r.categoryId === categoryId; });
+      if (rowData) updateRowDom(rowData);
+    });
+  }
+  async function refreshSingleRow(categoryId) {
+    await refreshRows([categoryId]);
+  }
+
+  async function saveEntry(categoryId, categoryType, input, rowEl) {
+    const button = rowEl.querySelector('.save-btn');
+    const raw = input.value;
+    const parsed = parseAmountInput(raw, allowsNegativeInput(categoryType));
+    if (!parsed.ok) {
+      alert('金額は' + (allowsNegativeInput(categoryType) ? '整数' : '0以上の整数') + 'で入力してください');
+      return;
+    }
+    button.disabled = true;
+    try {
+      // 既存の機械生成メモ(仮入力タグ・精算由来メモ)はユーザーが実際に保存した時点で消す。
+      // それ以外(ユーザーがシートに直接書いたメモ等)は保存のたびに空文字で潰さず引き継ぐ。
+      const existingMemo = rowEl.getAttribute('data-saved-memo') || '';
+      const memoToSend = isMachineGeneratedMemo(existingMemo) ? '' : existingMemo;
+      await apiPost({
+        action: 'upsertEntry',
+        categoryId: categoryId,
+        month: DISPLAY_MONTH,
+        amount: parsed.value,
+        memo: memoToSend
+      });
+      await refreshSingleRow(categoryId);
+    } catch (e) {
+      alert('保存に失敗しました: ' + e.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function settleEntryClick(categoryId, categoryName, input, button, rowEl) {
+    const savedAmountRaw = rowEl.getAttribute('data-saved-amount');
+    if (savedAmountRaw === '' || savedAmountRaw === null) {
+      alert('先にこのカテゴリの金額を保存してください');
+      return;
+    }
+    const savedAmount = Number(savedAmountRaw);
+    // 入力欄に保存していない変更が残っている場合は、確認ダイアログの金額とズレるため止める
+    const currentParsed = parseAmountInput(input.value, false);
+    const currentNormalized = currentParsed.ok && currentParsed.value !== '' ? String(currentParsed.value) : '';
+    if (currentNormalized !== '' && currentNormalized !== String(savedAmount)) {
+      alert(
+        '入力欄が保存済みの金額(' + formatYen(savedAmount) + ')と異なります。\n' +
+        '先に「保存」してから「現金へ反映」を押してください。'
+      );
+      return;
+    }
+    // まだユーザーが確認していない自動仮入力のまま精算しようとしていないか警告する
+    const savedMemo = rowEl.getAttribute('data-saved-memo') || '';
+    const provisionalWarning = isProvisionalMemo(savedMemo)
+      ? 'この金額はまだ自動で仮入力されたもの(' + (savedMemo === '(既定値)' ? '既定値' : '自動繰越') + ')です。' +
+        '実際の請求額と異なる可能性があります。\n\n'
+      : '';
+    const confirmed = confirm(
+      provisionalWarning +
+      categoryName + 'の' + formatYen(savedAmount) + 'を現在の現金から差し引いて、この欄を空に戻します。\n' +
+      '実際にこの金額が引き落とされた後に押してください。よろしいですか？'
+    );
+    if (!confirmed) return;
+    button.disabled = true;
+    let result;
+    try {
+      result = await apiPost({ action: 'settleEntry', categoryId: categoryId, month: DISPLAY_MONTH });
+    } catch (e) {
+      alert('反映に失敗しました: ' + e.message);
+      button.disabled = false;
+      return;
+    }
+    // 精算対象の行と、金額が変わった現在の現金の行だけを更新する(全体再読み込みは
+    // 他の行に入力中の未保存値を消してしまうため避ける)。表示更新の失敗は精算の成否とは
+    // 別に扱う(精算自体は既に成功しているため、ボタンを再度有効化して二重実行を招かない)。
+    try {
+      await refreshRows([result.clearedCategoryId, result.balanceCategoryId]);
+    } catch (e) {
+      alert('反映は完了しましたが、表示の更新に失敗しました。画面を再読み込みしてください。');
+      button.disabled = false;
+    }
+  }
+
+  async function loadInputMonth(month) {
+    const container = document.getElementById('category-groups');
+    container.innerHTML = '<div class="empty-state">読み込み中…</div>';
+    try {
+      const data = await apiGet('monthValues', month ? { month: month } : undefined);
+      if (!SERVER_CURRENT_MONTH) SERVER_CURRENT_MONTH = data.month; // 初回のみ「今月」の基準にする
+      DISPLAY_MONTH = data.month;
+      updateMonthNavButtons();
+      renderCategoryGroups(data.rows);
+    } catch (e) {
+      // 初回読み込みに失敗すると月ナビが無効のまま復帰手段が無くなるため、再読み込みボタンを出す
+      container.innerHTML = '<div class="empty-state">読み込みに失敗しました: ' + escapeHtml(e.message) + '</div>' +
+        '<button type="button" class="add-cat-toggle" id="retry-load-button">再読み込み</button>';
+      const retryButton = document.getElementById('retry-load-button');
+      if (retryButton) retryButton.addEventListener('click', function () { loadInputMonth(month); });
+    }
+  }
+
+  document.getElementById('month-prev').addEventListener('click', function () {
+    const minMonth = addMonths(SERVER_CURRENT_MONTH, -MONTH_LOOKBACK);
+    const target = addMonths(DISPLAY_MONTH, -1);
+    if (target < minMonth) return;
+    loadInputMonth(target);
+  });
+  document.getElementById('month-next').addEventListener('click', function () {
+    const maxMonth = addMonths(SERVER_CURRENT_MONTH, MONTH_LOOKAHEAD);
+    const target = addMonths(DISPLAY_MONTH, 1);
+    if (target > maxMonth) return;
+    loadInputMonth(target);
+  });
+
+  // ---- カテゴリ追加 ----
+  document.getElementById('add-cat-toggle').addEventListener('click', function () {
+    document.getElementById('add-cat-form').classList.toggle('visible');
+  });
+  // 自動繰越とデフォルト値は同時に使わない想定(デフォルト値がある場合はそちらが常に優先される)。
+  // 両方同時に埋められる状態にすると誤解を招くため、片方に入力があればもう片方を無効化する。
+  const autoCarryCheckbox = document.getElementById('add-cat-autocarry');
+  const defaultValueInput = document.getElementById('add-cat-default');
+  autoCarryCheckbox.addEventListener('change', function () {
+    defaultValueInput.disabled = autoCarryCheckbox.checked;
+    if (autoCarryCheckbox.checked) defaultValueInput.value = '';
+  });
+  defaultValueInput.addEventListener('input', function () {
+    const hasValue = defaultValueInput.value.trim() !== '';
+    autoCarryCheckbox.disabled = hasValue;
+    if (hasValue) autoCarryCheckbox.checked = false;
+  });
+  document.getElementById('add-cat-submit').addEventListener('click', async function () {
+    const button = document.getElementById('add-cat-submit');
+    const messageEl = document.getElementById('add-cat-message');
+    const name = document.getElementById('add-cat-name').value.trim();
+    const type = document.getElementById('add-cat-type').value;
+    const autoCarry = autoCarryCheckbox.checked;
+    const defaultRaw = defaultValueInput.value.trim();
+    if (!name) {
+      messageEl.textContent = 'カテゴリ名を入力してください';
+      messageEl.className = 'message error';
+      return;
+    }
+    let defaultValue;
+    if (defaultRaw !== '') {
+      const parsed = parseAmountInput(defaultRaw, false);
+      if (!parsed.ok || parsed.value === '' || parsed.value <= 0) {
+        messageEl.textContent = 'デフォルト値は正の整数で入力してください';
+        messageEl.className = 'message error';
+        return;
+      }
+      defaultValue = parsed.value;
+    }
+    button.disabled = true;
+    messageEl.textContent = '追加中…';
+    messageEl.className = 'message';
+    try {
+      await apiPost({ action: 'addCategory', name: name, type: type, memo: '', autoCarry: autoCarry, defaultValue: defaultValue });
+      messageEl.textContent = '「' + name + '」を追加しました';
+      messageEl.className = 'message ok';
+      document.getElementById('add-cat-name').value = '';
+      autoCarryCheckbox.checked = false;
+      autoCarryCheckbox.disabled = false;
+      defaultValueInput.value = '';
+      defaultValueInput.disabled = false;
+      document.getElementById('add-cat-form').classList.remove('visible');
+      await loadInputMonth(DISPLAY_MONTH);
+    } catch (e) {
+      messageEl.textContent = '追加に失敗しました: ' + e.message;
+      messageEl.className = 'message error';
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  // ---- 見返し画面 ----
+  function renderBalanceTrend(months, balances, balanceProvisional) {
+    const el = document.getElementById('balance-trend');
+    const points = months
+      .map(function (m) { return { month: m, value: balances[m], provisional: !!(balanceProvisional && balanceProvisional[m]) }; })
+      .filter(function (p) { return typeof p.value === 'number'; });
+
+    if (points.length === 0) {
+      el.innerHTML = '<div class="empty-state">データがありません</div>';
+      return;
+    }
+    if (points.length === 1) {
+      el.innerHTML = '<div class="single-point">' + escapeHtml(formatMonthLabel(points[0].month)) +
+        '： ' + formatYen(points[0].value) + (points[0].provisional ? '(見込み)' : '') + '</div>';
+      return;
+    }
+
+    // iPhoneの実描画幅(~320px)まで縮小されても文字が読めるよう、viewBoxの座標系ごと
+    // フォントサイズを大きめに取る(実効フォントサイズはこのSVGの表示幅/600倍になる)。
+    // padL/padRは月ラベル(text-anchor="middle"、"12月"で幅約42)が両端で見切れないよう広めに取る。
+    const width = 600, height = 200, padL = 30, padR = 30, padT = 16, padB = 40;
+    const values = points.map(function (p) { return p.value; });
+    let min = Math.min.apply(null, values), max = Math.max.apply(null, values);
+    if (min === max) {
+      const pad = Math.max(1, Math.abs(min) * 0.1);
+      min -= pad; max += pad;
+    } else {
+      const pad = (max - min) * 0.15;
+      min -= pad; max += pad;
+    }
+    const innerW = width - padL - padR, innerH = height - padT - padB;
+    const stepX = innerW / (points.length - 1);
+    const xFor = function (i) { return padL + stepX * i; };
+    const yFor = function (v) { return padT + innerH - ((v - min) / (max - min)) * innerH; };
+
+    let pathD = '';
+    let circles = '';
+    let labels = '';
+    points.forEach(function (p, i) {
+      const x = xFor(i), y = yFor(p.value);
+      pathD += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+      // 仮入力を含む月は点を淡色・小さめにして「まだ確定していない」ことを示す
+      const circleColor = p.provisional ? 'var(--text-dim)' : 'var(--accent)';
+      circles += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="3" fill="' + circleColor + '"></circle>';
+      labels += '<text x="' + x.toFixed(1) + '" y="' + (height - 16) + '" font-size="20" text-anchor="middle" fill="var(--text-dim)">' +
+        escapeHtml(shortMonthLabel(p.month)) + '</text>';
+    });
+    const last = points[points.length - 1];
+    const lastLabelY = Math.max(24, yFor(last.value) - 10);
+    const lastLabelText = formatYen(last.value) + (last.provisional ? '(見込み)' : '');
+    labels += '<text x="' + xFor(points.length - 1).toFixed(1) + '" y="' + lastLabelY.toFixed(1) +
+      '" font-size="22" text-anchor="end" fill="var(--text)" font-weight="700">' + lastLabelText + '</text>';
+
+    el.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" class="trend-svg">' +
+      '<path d="' + pathD.trim() + '" fill="none" stroke="var(--accent)" stroke-width="2"></path>' +
+      circles + labels + '</svg>';
+  }
+
+  function renderNetFlowBars(months, netFlow, netFlowProvisional) {
+    const el = document.getElementById('netflow-bars');
+    if (months.length === 0) {
+      el.innerHTML = '<div class="empty-state">データがありません</div>';
+      return;
+    }
+    const values = months.map(function (m) { return netFlow[m] || 0; });
+    const maxAbs = Math.max(1, Math.max.apply(null, values.map(Math.abs)));
+    let html = '';
+    months.forEach(function (m, i) {
+      const v = values[i];
+      const provisional = !!(netFlowProvisional && netFlowProvisional[m]);
+      const pct = Math.round((Math.abs(v) / maxAbs) * 100);
+      const cls = v < 0 ? 'bar-negative' : 'bar-positive';
+      html += '<div class="bar-row">' +
+        '<span class="bar-label">' + escapeHtml(shortMonthLabel(m)) + (provisional ? '※' : '') + '</span>' +
+        '<div class="bar-track"><div class="bar-fill ' + cls + '" style="width:' + pct + '%"></div></div>' +
+        '<span class="bar-value ' + cls + '">' + formatYen(v) + '</span>' +
+        '</div>';
+    });
+    const hasProvisional = months.some(function (m) { return netFlowProvisional && netFlowProvisional[m]; });
+    if (hasProvisional) {
+      html += '<div class="bar-provisional-note">※ 未確定(仮入力)の値を含む月次収支です</div>';
+    }
+    el.innerHTML = html;
+  }
+
+  function renderPivotTable(summary) {
+    const el = document.getElementById('pivot-table');
+    if (summary.months.length === 0) {
+      el.innerHTML = '<div class="empty-state">データがありません</div>';
+      return;
+    }
+    let thead = '<tr><th>カテゴリ</th>';
+    summary.months.forEach(function (m) { thead += '<th>' + escapeHtml(shortMonthLabel(m)) + '</th>'; });
+    thead += '</tr>';
+
+    let tbody = '';
+    summary.categories.forEach(function (c) {
+      const grid = summary.grid[c.id] || {};
+      const provisionalMap = (summary.gridProvisional && summary.gridProvisional[c.id]) || {};
+      tbody += '<tr><td>' + escapeHtml(c.name) + '</td>';
+      summary.months.forEach(function (m) {
+        const v = grid[m];
+        // 差引は実際の符号で色を変える。収入・支出・残高は種別固定の色。
+        const cellClass = c.type === '支出' ? 'type-expense'
+          : c.type === '残高' ? 'type-balance'
+          : c.type === '差引' ? (typeof v === 'number' && v < 0 ? 'type-expense' : '')
+          : '';
+        const provisionalClass = provisionalMap[m] ? ' provisional' : '';
+        tbody += '<td class="' + cellClass + provisionalClass + '">' + (typeof v === 'number' ? formatYen(v) : '—') + '</td>';
+      });
+      tbody += '</tr>';
+    });
+
+    tbody += '<tr class="netflow-row"><td>月次収支</td>';
+    summary.months.forEach(function (m) {
+      const v = summary.netFlow[m];
+      const cls = typeof v === 'number' && v < 0 ? 'netflow-negative' : '';
+      const provisionalClass = (summary.netFlowProvisional && summary.netFlowProvisional[m]) ? ' provisional' : '';
+      tbody += '<td class="' + cls + provisionalClass + '">' + (typeof v === 'number' ? formatYen(v) : '—') + '</td>';
+    });
+    tbody += '</tr>';
+
+    el.innerHTML = '<div class="table-wrap"><table class="pivot"><thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></div>' +
+      '<div class="bar-provisional-note" style="margin-top:8px;">※ 斜体の薄いセルは未確定(仮入力)の値です</div>';
+  }
+
+  async function loadReview() {
+    document.getElementById('balance-trend').innerHTML = '<div class="empty-state">読み込み中…</div>';
+    document.getElementById('netflow-bars').innerHTML = '<div class="empty-state">読み込み中…</div>';
+    document.getElementById('pivot-table').innerHTML = '<div class="empty-state">読み込み中…</div>';
+    try {
+      const summary = await apiGet('summary');
+      renderBalanceTrend(summary.months, summary.balances, summary.balanceProvisional);
+      renderNetFlowBars(summary.months, summary.netFlow, summary.netFlowProvisional);
+      renderPivotTable(summary);
+    } catch (e) {
+      const msg = '<div class="empty-state">読み込みに失敗しました: ' + escapeHtml(e.message) + '</div>';
+      document.getElementById('balance-trend').innerHTML = msg;
+      document.getElementById('netflow-bars').innerHTML = '';
+      document.getElementById('pivot-table').innerHTML = '';
+    }
+  }
+
+  // ---- 初期化 ----
+  // ボタン操作を待たず、ページ読み込み直後にバックグラウンドで取得を開始する
+  loadInputMonth();
+</script>
+</body>
+</html>
