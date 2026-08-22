@@ -190,6 +190,7 @@
     width: 108px;
     padding: 9px 10px;
     font-size: 0.95rem;
+    font-weight: 600;
     text-align: right;
     border-radius: 10px;
     border: 1px solid var(--glass-border);
@@ -197,18 +198,9 @@
     color: var(--text);
     font-variant-numeric: tabular-nums;
   }
-  .save-btn {
-    padding: 9px 12px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: #fff;
-    background: var(--accent);
-    border: none;
-    border-radius: 10px;
-    transition: transform 100ms ease-out;
-  }
-  .save-btn:active { transform: scale(0.95); }
-  .save-btn:disabled { opacity: 0.5; }
+  .amount-input.type-expense { color: var(--danger); }
+  .amount-input.type-income { color: var(--income); }
+  .amount-input.type-balance { color: var(--accent); }
   .settle-btn {
     padding: 9px 10px;
     font-size: 0.72rem;
@@ -329,6 +321,9 @@
     <button type="button" id="month-next" disabled>▶</button>
   </div>
   <div id="category-groups"><div class="empty-state">読み込み中…</div></div>
+
+  <button type="button" class="primary-button" id="save-all-button">まとめて保存</button>
+  <div class="message" id="save-all-message"></div>
 
   <button type="button" class="add-cat-toggle" id="add-cat-toggle">＋ カテゴリを追加</button>
   <div class="add-cat-form" id="add-cat-form">
@@ -529,6 +524,7 @@
     const provisional = isProvisionalMemo(r.memo);
     // 差引・残高はiOSの純粋な数字キーパッド(マイナス記号がない)ではなくフルキーボードを出す
     const inputAttrs = allowsNegativeInput(r.type) ? 'inputmode="text"' : 'inputmode="numeric" pattern="[0-9]*"';
+    // 金額入力欄そのものの文字色もラベルと同じ種別色にする(ラベルだけでなく数字自体も赤/黒にする)
     return '' +
       '<div class="cat-row" data-category-id="' + escapeHtml(r.categoryId) + '" data-category-name="' + escapeHtml(r.name) + '"' +
         ' data-category-type="' + escapeHtml(r.type) + '" data-saved-amount="' + escapeHtml(savedAmountAttr) + '"' +
@@ -539,8 +535,7 @@
             freshnessText(r.updatedAtMs) + provisionalLabel(r.memo) + '</span>' +
         '</div>' +
         '<div class="cat-input-wrap">' +
-          '<input type="text" ' + inputAttrs + ' class="amount-input" value="' + escapeHtml(displayAmount) + '">' +
-          '<button type="button" class="save-btn">保存</button>' +
+          '<input type="text" ' + inputAttrs + ' class="amount-input ' + rowTypeClass + '" value="' + escapeHtml(displayAmount) + '">' +
           (showSettleButton ? '<button type="button" class="settle-btn">現金へ反映</button>' : '') +
         '</div>' +
       '</div>';
@@ -549,10 +544,7 @@
   function bindCategoryRow(rowEl) {
     const categoryId = rowEl.getAttribute('data-category-id');
     const categoryName = rowEl.getAttribute('data-category-name');
-    const categoryType = rowEl.getAttribute('data-category-type');
     const input = rowEl.querySelector('.amount-input');
-    const saveButton = rowEl.querySelector('.save-btn');
-    saveButton.addEventListener('click', function () { saveEntry(categoryId, categoryType, input, rowEl); });
     const settleButton = rowEl.querySelector('.settle-btn');
     if (settleButton) {
       settleButton.addEventListener('click', function () { settleEntryClick(categoryId, categoryName, input, settleButton, rowEl); });
@@ -592,12 +584,14 @@
     rowEl.setAttribute('data-saved-amount', displayAmount === '' ? '' : String(displayAmount));
     rowEl.setAttribute('data-saved-memo', r.memo || '');
 
-    // 差引・残高は符号によって色が変わるため、保存し直した後も追随させる
+    // 差引・残高は符号によって色が変わるため、保存し直した後も追随させる。
+    // ラベルだけでなく金額入力欄自体の文字色も揃える。
     const nameEl = rowEl.querySelector('.cat-name');
     const rowTypeClass = allowsNegativeInput(r.type)
       ? (typeof r.amount === 'number' && r.amount < 0 ? 'type-expense' : typeClass(r.type))
       : typeClass(r.type);
     nameEl.className = 'cat-name ' + rowTypeClass;
+    input.className = 'amount-input ' + rowTypeClass;
 
     const provisional = isProvisionalMemo(r.memo);
     const freshnessEl = rowEl.querySelector('.cat-freshness');
@@ -627,43 +621,77 @@
       if (rowData) updateRowDom(rowData);
     });
   }
-  async function refreshSingleRow(categoryId) {
-    await refreshRows([categoryId]);
-  }
+  /**
+   * 画面上の全カテゴリ行をスキャンし、保存済みの値(data-saved-amount)から変わっている行だけを
+   * まとめて保存する。行ごとに保存ボタンを押す手間をなくすため、入力画面には
+   * この1つの「まとめて保存」ボタンだけを置く(現金へ反映=精算は別のボタンとして残す)。
+   */
+  async function saveAllChanges() {
+    const button = document.getElementById('save-all-button');
+    const messageEl = document.getElementById('save-all-message');
+    const rows = [...document.querySelectorAll('.cat-row')];
+    const changed = [];
+    const invalid = [];
 
-  async function saveEntry(categoryId, categoryType, input, rowEl) {
-    const button = rowEl.querySelector('.save-btn');
-    const raw = input.value;
-    const parsed = parseAmountInput(raw, allowsNegativeInput(categoryType));
-    if (!parsed.ok) {
-      alert('金額は' + (allowsNegativeInput(categoryType) ? '整数' : '0以上の整数') + 'で入力してください');
+    rows.forEach(function (rowEl) {
+      const categoryType = rowEl.getAttribute('data-category-type');
+      const input = rowEl.querySelector('.amount-input');
+      const savedAmountRaw = rowEl.getAttribute('data-saved-amount');
+      const parsed = parseAmountInput(input.value, allowsNegativeInput(categoryType));
+      if (!parsed.ok) {
+        invalid.push(rowEl.getAttribute('data-category-name'));
+        return;
+      }
+      const normalizedCurrent = parsed.value === '' ? '' : String(parsed.value);
+      const normalizedSaved = savedAmountRaw === null ? '' : savedAmountRaw;
+      if (normalizedCurrent === normalizedSaved) return; // 変更なしの行は送らない
+      changed.push({ rowEl: rowEl, categoryId: rowEl.getAttribute('data-category-id'), value: parsed.value });
+    });
+
+    if (invalid.length > 0) {
+      messageEl.textContent = invalid.join('、') + ' の金額が正しくありません(整数で入力してください)';
+      messageEl.className = 'message error';
       return;
     }
+    if (changed.length === 0) {
+      messageEl.textContent = '変更はありません';
+      messageEl.className = 'message';
+      return;
+    }
+
     button.disabled = true;
+    messageEl.textContent = '保存中…';
+    messageEl.className = 'message';
     try {
-      // 既存の機械生成メモ(仮入力タグ・精算由来メモ)はユーザーが実際に保存した時点で消す。
-      // それ以外(ユーザーがシートに直接書いたメモ等)は保存のたびに空文字で潰さず引き継ぐ。
-      const existingMemo = rowEl.getAttribute('data-saved-memo') || '';
-      const memoToSend = isMachineGeneratedMemo(existingMemo) ? '' : existingMemo;
-      await apiPost({
-        action: 'upsertEntry',
-        categoryId: categoryId,
-        month: DISPLAY_MONTH,
-        amount: parsed.value,
-        memo: memoToSend
-      });
-      await refreshSingleRow(categoryId);
+      for (const c of changed) {
+        // 既存の機械生成メモ(仮入力タグ・精算由来メモ)はユーザーが実際に保存した時点で消す。
+        // それ以外(ユーザーがシートに直接書いたメモ等)は保存のたびに空文字で潰さず引き継ぐ。
+        const existingMemo = c.rowEl.getAttribute('data-saved-memo') || '';
+        const memoToSend = isMachineGeneratedMemo(existingMemo) ? '' : existingMemo;
+        await apiPost({
+          action: 'upsertEntry',
+          categoryId: c.categoryId,
+          month: DISPLAY_MONTH,
+          amount: c.value,
+          memo: memoToSend
+        });
+      }
+      await refreshRows(changed.map(function (c) { return c.categoryId; }));
+      messageEl.textContent = changed.length + '件保存しました';
+      messageEl.className = 'message ok';
     } catch (e) {
-      alert('保存に失敗しました: ' + e.message);
+      messageEl.textContent = '保存に失敗しました: ' + e.message;
+      messageEl.className = 'message error';
     } finally {
       button.disabled = false;
     }
   }
+  document.getElementById('save-all-button').addEventListener('click', saveAllChanges);
 
   async function settleEntryClick(categoryId, categoryName, input, button, rowEl) {
     const savedAmountRaw = rowEl.getAttribute('data-saved-amount');
     if (savedAmountRaw === '' || savedAmountRaw === null) {
-      alert('先にこのカテゴリの金額を保存してください');
+      alert('先にこのカテゴリの金額を「まとめて保存」で保存してください');
       return;
     }
     const savedAmount = Number(savedAmountRaw);
@@ -673,7 +701,7 @@
     if (currentNormalized !== '' && currentNormalized !== String(savedAmount)) {
       alert(
         '入力欄が保存済みの金額(' + formatYen(savedAmount) + ')と異なります。\n' +
-        '先に「保存」してから「現金へ反映」を押してください。'
+        '先に「まとめて保存」してから「現金へ反映」を押してください。'
       );
       return;
     }
