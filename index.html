@@ -170,13 +170,29 @@
   }
   .projection-label { font-size: 0.75rem; color: var(--text-dim); font-weight: 600; }
   .projection-value { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
+  .projection-value.projection-value-secondary { font-size: 1.25rem; }
   .projection-breakdown { font-size: 0.72rem; color: var(--text-dim); }
   .projection-note { font-size: 0.68rem; color: var(--accent); margin-top: 6px; line-height: 1.4; }
   .projection-empty { font-size: 0.85rem; color: var(--text-dim); padding: 6px 0 2px; }
+  .projection-divider { border-top: 1px solid var(--glass-border); margin: 12px 0; }
 
   .cat-row.invalid-row { outline: 2px solid var(--danger); border-radius: 10px; }
 
   .build-stamp { text-align: center; font-size: 0.65rem; color: var(--text-dim); opacity: 0.6; margin-top: 18px; }
+
+  /* 来月の先取り入力(折りたたみ) */
+  .next-month-details { margin-top: 22px; border-top: 1px solid var(--glass-border); padding-top: 14px; }
+  .next-month-details summary {
+    font-size: 0.9rem;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 4px 0;
+    list-style: none;
+  }
+  .next-month-details summary::-webkit-details-marker { display: none; }
+  .next-month-details summary::before { content: '▸ '; }
+  .next-month-details[open] summary::before { content: '▾ '; }
+  .next-month-details #category-groups-next { margin-top: 10px; }
 
   /* カテゴリグループ */
   .group-title {
@@ -284,6 +300,14 @@
 
   .empty-state { text-align: center; color: var(--text-dim); padding: 20px 0; font-size: 0.85rem; }
 
+  .section-heading {
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin: 26px 0 12px;
+    padding-top: 18px;
+    border-top: 1px solid var(--glass-border);
+  }
+
   /* 見返し画面 */
   .review-section-title { font-size: 0.85rem; font-weight: 700; color: var(--text-dim); margin: 0 0 10px; }
   .trend-svg { width: 100%; height: auto; display: block; }
@@ -333,20 +357,29 @@
 </div>
 
 <section id="panel-input" class="panel visible card glass">
+  <div class="projection-card glass" id="projection-card">
+    <div class="projection-empty">読み込み中…</div>
+  </div>
+
   <div class="month-nav">
     <button type="button" id="month-prev" disabled>◀</button>
     <div class="month-label" id="month-label">—</div>
     <button type="button" id="month-next" disabled>▶</button>
-  </div>
-  <div class="projection-card glass" id="projection-card">
-    <div class="projection-label">月末の残り見込み</div>
-    <div class="projection-empty">読み込み中…</div>
   </div>
 
   <div id="category-groups"><div class="empty-state">読み込み中…</div></div>
 
   <button type="button" class="primary-button" id="save-all-button">まとめて保存</button>
   <div class="message" id="save-all-message"></div>
+
+  <div id="next-month-section" style="display:none;">
+    <details class="next-month-details">
+      <summary id="next-month-heading">来月の予定を先に入力</summary>
+      <div id="category-groups-next"><div class="empty-state">読み込み中…</div></div>
+      <button type="button" class="primary-button" id="save-all-button-next">保存</button>
+      <div class="message" id="save-all-message-next"></div>
+    </details>
+  </div>
 
   <button type="button" class="add-cat-toggle" id="add-cat-toggle">＋ カテゴリを追加</button>
   <div class="add-cat-form" id="add-cat-form">
@@ -512,10 +545,28 @@
 
   // ---- 状態 ----
   let SERVER_CURRENT_MONTH = null; // サーバーが判定した「今月」。ページ読み込み時に一度だけ取得する
-  let DISPLAY_MONTH = null;        // 入力画面で現在表示中の月
+  let DISPLAY_MONTH = null;        // 上段(◀▶で移動できる)セクションが表示中の月
+  let NEXT_MONTH = null;           // 下段(常に「来月」固定)セクションが表示中の月
+  let CATEGORIES_CACHE = null;     // 来月の見込み計算(デフォルト値・自動繰越の判定)に使う。addCategory後に更新する
+  let SAVE_IN_FLIGHT_COUNT = 0;    // 今月/来月どちらかの「まとめて保存」が進行中の件数(精算ボタン等の排他制御用)
+
+  async function loadCategoriesCache() {
+    try {
+      CATEGORIES_CACHE = await apiGet('categories');
+    } catch (e) {
+      CATEGORIES_CACHE = null; // 失敗しても来月見込みの定例額計算を諦めるだけで、画面全体は壊さない
+    }
+  }
 
   const MONTH_LOOKBACK = 24; // 過去何ヶ月まで遡って表示・入力できるか
   const MONTH_LOOKAHEAD = 1; // 未来何ヶ月まで先取り入力を許すか(締め日が翌月にずれ込む対策)
+
+  // 入力画面は2つの独立したセクションを持つ:
+  //   ''      = 上段。◀▶で任意の月に移動できる(既定は今月)
+  //   '-next' = 下段。常に「来月」固定で今月と同時に見えるようにする
+  // 以下の関数群はこのsec(セクションキー)を引数に取り、要素IDのサフィックスとして使う。
+  function sectionMonth(sec) { return sec === '-next' ? NEXT_MONTH : DISPLAY_MONTH; }
+  function sectionContainer(sec) { return document.getElementById('category-groups' + sec); }
 
   // ---- タブ切替 ----
   function showTab(name) {
@@ -558,7 +609,7 @@
     return type === '支出' ? '引き落とし済' : '入金済み';
   }
 
-  function buildCategoryRowHtml(r) {
+  function buildCategoryRowHtml(r, sec) {
     const displayAmount = r.amount === null || r.amount === undefined ? '' : r.amount;
     const savedAmountAttr = r.amount === null || r.amount === undefined ? '' : r.amount;
     // 差引・残高は実際の符号で色を変える。収入・支出は種別固定の色。
@@ -568,7 +619,10 @@
     // 支出・収入で、0以外の金額が保存済みのときだけ精算ボタンを出す。実際にお金が動いたタイミングで
     // 押すと、現在の現金にこの金額を反映(支出は差し引き・収入は足し込み)して、この欄を0円にする。
     // 0円(未入力または精算済み)には精算するものが無いのでボタンは出さない。
-    const showSettleButton = (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number' && r.amount !== 0;
+    // 来月セクション(-next)では精算しない: まだ起きていない月の入金・引き落としを「精算」する
+    // 意味がなく、押すと来月の現在の現金という(今はまだ存在しない)幽霊行を作ってしまうため。
+    const showSettleButton = sec !== '-next' &&
+      (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number' && r.amount !== 0;
     const provisional = isProvisionalMemo(r.memo);
     const inputAttrs = usesFullKeyboard(r.type) ? 'inputmode="text"' : 'inputmode="numeric" pattern="[0-9]*"';
     // 金額入力欄そのものの文字色もラベルと同じ種別色にする(ラベルだけでなく数字自体も赤/黒にする)
@@ -588,44 +642,48 @@
       '</div>';
   }
 
-  function bindCategoryRow(rowEl) {
+  function bindCategoryRow(rowEl, sec) {
     const categoryId = rowEl.getAttribute('data-category-id');
     const categoryName = rowEl.getAttribute('data-category-name');
     const input = rowEl.querySelector('.amount-input');
     const settleButton = rowEl.querySelector('.settle-btn');
     if (settleButton) {
-      settleButton.addEventListener('click', function () { settleEntryClick(categoryId, categoryName, input, settleButton, rowEl); });
+      settleButton.addEventListener('click', function () { settleEntryClick(categoryId, categoryName, input, settleButton, rowEl, sec); });
     }
   }
 
-  function renderCategoryGroups(rows) {
-    const container = document.getElementById('category-groups');
+  function renderCategoryGroups(rows, sec) {
+    const container = sectionContainer(sec);
     if (!rows || rows.length === 0) {
       container.innerHTML = '<div class="empty-state">カテゴリがありません</div>';
       return;
     }
-    const groupOrder = ['残高', '収入', '支出', '差引'];
+    // 来月セクションには残高(現在の現金)を出さない。「来月の現在の現金」は実測不能な値であり、
+    // 欄を見せるとユーザーが今の手持ち額を打ち込んでしまい、未来日付の残高行が作られてしまうため。
+    const groupOrder = sec === '-next' ? ['収入', '支出', '差引'] : ['残高', '収入', '支出', '差引'];
     const groupLabels = { '残高': '残高', '収入': '収入', '支出': '支出', '差引': '差引(収支どちらも)' };
     let html = '';
     groupOrder.forEach(function (type) {
       const groupRows = rows.filter(function (r) { return r.type === type; });
       if (groupRows.length === 0) return;
       html += '<div class="group-title">' + escapeHtml(groupLabels[type]) + '</div>';
-      groupRows.forEach(function (r) { html += buildCategoryRowHtml(r); });
+      groupRows.forEach(function (r) { html += buildCategoryRowHtml(r, sec); });
     });
     container.innerHTML = html;
-    container.querySelectorAll('.cat-row').forEach(bindCategoryRow);
+    container.querySelectorAll('.cat-row').forEach(function (rowEl) { bindCategoryRow(rowEl, sec); });
     renderProjectionCard();
   }
 
   /**
-   * 「月末の残り見込み」= 現在の現金(残高) + 今月まだ精算していない収入・支出の合計。
+   * 「月末の残り見込み」= 現在の現金(残高) + その月まだ精算していない収入・支出の合計。
    * 画面上の入力欄の値(保存前でもよい)からその場で計算する。API呼び出しは発生しない。
-   * 精算(引き落とし済/入金済み)を押すと、対象カテゴリの欄が空になり残高側に反映されるため、
-   * この合計自体は変化しない(「予定」区分から「実績」区分に移るだけ)。
+   * 精算(引き落とし済/入金済み)を押すと、対象カテゴリの欄が0円になり残高側に反映されるため、
+   * この合計自体は変化しない(「予定」区分から「実績」区分に移るだけ)。secで上段(今月・可変)か
+   * 下段(来月・固定)かを指定し、それぞれの見た目上のセクション内だけを見て計算する
+   * (2つのセクションに同じカテゴリIDの行が両方存在するため、範囲を区切らないと二重計上する)。
    */
-  function computeProjection() {
-    const rows = [...document.querySelectorAll('.cat-row')];
+  function computeProjection(sec) {
+    const rows = [...sectionContainer(sec).querySelectorAll('.cat-row')];
     const balanceRow = rows.find(function (r) { return r.getAttribute('data-category-type') === '残高'; });
     if (!balanceRow) return null;
     const balanceParsed = parseAmountInput(balanceRow.querySelector('.amount-input').value, true);
@@ -664,40 +722,125 @@
     };
   }
 
+  /**
+   * 来月の残高行は実在しない(実測不能)ため、来月末の見込みは来月自身の残高からではなく、
+   * 「今月末の見込み ＋ 来月の収入 − 来月の支出」を連鎖させて計算する。来月の収入・支出は
+   * (1)来月分として既に保存済みの実額があればそれを、(2)無ければカテゴリのデフォルト値を、
+   * (3)デフォルト値も無く自動繰越カテゴリなら今月の実額を「定例額の仮の見込み」として使う。
+   * 入力欄には反映しない(見込み計算にだけ使う。反映するとまとめて保存が誤って変更扱いする)。
+   */
+  function estimateNextMonthProjection(baseProjection, categories) {
+    let incomingTotal = 0;
+    let outgoingTotal = 0;
+    const estimatedParts = [];
+    const nextContainer = document.getElementById('category-groups-next');
+    const currentContainer = document.getElementById('category-groups');
+    categories.forEach(function (cat) {
+      if (cat.type === '残高') return;
+      let amount = null;
+      let isEstimate = false;
+
+      const nextRowEl = nextContainer ? nextContainer.querySelector('.cat-row[data-category-id="' + CSS.escape(cat.id) + '"]') : null;
+      const nextSavedRaw = nextRowEl ? nextRowEl.getAttribute('data-saved-amount') : '';
+      if (nextRowEl && nextSavedRaw !== '' && nextSavedRaw !== null) {
+        amount = Number(nextSavedRaw); // 来月分として既に確定保存されている実額を最優先する
+      } else if (typeof cat.defaultValue === 'number' && cat.defaultValue > 0) {
+        amount = cat.defaultValue;
+        isEstimate = true;
+      } else if (cat.autoCarry) {
+        const currentRowEl = currentContainer ? currentContainer.querySelector('.cat-row[data-category-id="' + CSS.escape(cat.id) + '"]') : null;
+        const currentSavedRaw = currentRowEl ? currentRowEl.getAttribute('data-saved-amount') : '';
+        if (currentSavedRaw !== '' && currentSavedRaw !== null) {
+          amount = Number(currentSavedRaw); // 自動繰越は前月実額を引き継ぐ設計なので、今月の実額を仮の見込みに使う
+          isEstimate = true;
+        }
+      }
+      if (amount === null || !isFinite(amount)) return;
+
+      if (cat.type === '支出') outgoingTotal += amount; else incomingTotal += amount;
+      if (isEstimate) {
+        estimatedParts.push({ name: cat.name, signedAmount: cat.type === '支出' ? -amount : amount });
+      }
+    });
+
+    return {
+      incomingTotal: incomingTotal,
+      outgoingTotal: outgoingTotal,
+      projection: baseProjection + incomingTotal - outgoingTotal,
+      estimatedParts: estimatedParts
+    };
+  }
+
+  /**
+   * 見込みカードは1枚に統合し、今月分の下に来月分を連結して表示する(スクロールなしで
+   * 両方が一目で見えるようにするため)。来月ブロックは「今月」を表示しているときだけ出す
+   * (過去/未来の月を見返しているときに実在の来月見込みを添えても文脈が合わないため)。
+   */
   function renderProjectionCard() {
     const card = document.getElementById('projection-card');
     if (!card) return;
-    const result = computeProjection();
-    const label = (DISPLAY_MONTH && DISPLAY_MONTH === SERVER_CURRENT_MONTH) ? '月末の残り見込み' : 'この月の見込み残高';
-    if (!result || !result.hasBalance) {
-      card.innerHTML =
-        '<div class="projection-label">' + label + '</div>' +
+    const isViewingCurrentMonth = DISPLAY_MONTH && DISPLAY_MONTH === SERVER_CURRENT_MONTH;
+    const currentResult = computeProjection('');
+    const currentLabel = (DISPLAY_MONTH ? formatMonthLabel(DISPLAY_MONTH) : '') +
+      (isViewingCurrentMonth ? '末の残り見込み' : 'の見込み残高');
+
+    let html;
+    if (!currentResult || !currentResult.hasBalance) {
+      html = '<div class="projection-label">' + currentLabel + '</div>' +
         '<div class="projection-empty">現在の現金を入力すると、見込み額が出ます</div>';
-      return;
+    } else {
+      html = '<div class="projection-label">' + currentLabel + '</div>' +
+        '<div class="projection-value">' + formatYen(currentResult.projection) + '</div>' +
+        '<div class="projection-breakdown">現在の現金 ' + formatYen(currentResult.balance) +
+          ' ＋ これから入る ' + formatYen(currentResult.incomingTotal) +
+          ' − これから出る ' + formatYen(currentResult.outgoingTotal) + '</div>';
+      if (currentResult.provisionalParts.length > 0) {
+        const parts = currentResult.provisionalParts.map(function (p) {
+          return escapeHtml(p.name) + ' ' + formatYen(p.amount);
+        }).join('・');
+        html += '<div class="projection-note">※ ' + parts + ' はまだ仮の見込み額です。実際の金額に直すと精度が上がります。</div>';
+      }
     }
-    let html =
-      '<div class="projection-label">' + label + '</div>' +
-      '<div class="projection-value">' + formatYen(result.projection) + '</div>' +
-      '<div class="projection-breakdown">現在の現金 ' + formatYen(result.balance) +
-        ' ＋ これから入る ' + formatYen(result.incomingTotal) +
-        ' − これから出る ' + formatYen(result.outgoingTotal) + '</div>';
-    if (result.provisionalParts.length > 0) {
-      const parts = result.provisionalParts.map(function (p) {
-        return escapeHtml(p.name) + ' ' + formatYen(p.amount);
-      }).join('・');
-      html += '<div class="projection-note">※ ' + parts + ' はまだ仮の見込み額です。実際の金額に直すと精度が上がります。</div>';
+
+    if (isViewingCurrentMonth) {
+      const nextLabel = NEXT_MONTH ? formatMonthLabel(NEXT_MONTH) + '末の残り見込み' : '来月末の残り見込み';
+      html += '<div class="projection-divider"></div>';
+      if (!currentResult || !currentResult.hasBalance) {
+        html += '<div class="projection-label">' + nextLabel + '</div>' +
+          '<div class="projection-empty">現在の現金を入力すると、見込み額が出ます</div>';
+      } else if (!CATEGORIES_CACHE || !NEXT_MONTH) {
+        html += '<div class="projection-label">' + nextLabel + '</div>' +
+          '<div class="projection-empty">読み込み中…</div>';
+      } else {
+        const nextResult = estimateNextMonthProjection(currentResult.projection, CATEGORIES_CACHE);
+        html += '<div class="projection-label">' + nextLabel + '</div>' +
+          '<div class="projection-value projection-value-secondary">' + formatYen(nextResult.projection) + '</div>' +
+          '<div class="projection-breakdown">' + formatMonthLabel(DISPLAY_MONTH) + '末の見込みから' +
+            ' ＋ ' + formatYen(nextResult.incomingTotal) + ' − ' + formatYen(nextResult.outgoingTotal) + '</div>';
+        if (nextResult.estimatedParts.length > 0) {
+          const parts = nextResult.estimatedParts.map(function (p) {
+            return escapeHtml(p.name) + ' ' + formatYen(p.signedAmount);
+          }).join('・');
+          html += '<div class="projection-note">※ ' + parts + ' は定例額での仮計算です。下の「' +
+            (NEXT_MONTH ? formatMonthLabel(NEXT_MONTH) : '来月') + 'の予定を先に入力」で確定額に直せます。</div>';
+        }
+      }
     }
+
     card.innerHTML = html;
   }
-  // 入力中(未保存)の値でも見込みがその場で更新されるよう、金額欄の入力を横取りする
-  document.getElementById('category-groups').addEventListener('input', function (e) {
-    if (e.target.classList.contains('amount-input')) renderProjectionCard();
+  // 入力中(未保存)の値でもその場で見込みが更新されるよう、金額欄の入力を横取りする。
+  // カードは今月・来月を1枚にまとめて計算するため、どちらのセクションの入力でも
+  // renderProjectionCard()を丸ごと呼び直す(セクション別に分ける意味がない)。
+  document.addEventListener('input', function (e) {
+    if (!e.target.classList.contains('amount-input')) return;
+    renderProjectionCard();
   });
   // 金額欄をタップ/フォーカスした瞬間に、既存の値を全選択状態にする。
   // 前月から自動で引き継がれた数字や、前回入力した数字の上にそのまま数字を打てば
   // 全部が上書きされるので、都度クリアする手間がなくなる。
   // focusはバブリングしないためfocusinで委譲する。
-  document.getElementById('category-groups').addEventListener('focusin', function (e) {
+  document.addEventListener('focusin', function (e) {
     if (e.target.classList.contains('amount-input')) e.target.select();
   });
 
@@ -706,8 +849,8 @@
    * 入力中の値があった場合にそれを無警告で消してしまうため)。精算ボタンの出現/消失、
    * 鮮度表示、仮入力ラベル、data-saved-*属性をまとめて最新化する。
    */
-  function updateRowDom(r) {
-    const rowEl = document.querySelector('.cat-row[data-category-id="' + CSS.escape(r.categoryId) + '"]');
+  function updateRowDom(r, sec) {
+    const rowEl = sectionContainer(sec).querySelector('.cat-row[data-category-id="' + CSS.escape(r.categoryId) + '"]');
     if (!rowEl) return;
     const input = rowEl.querySelector('.amount-input');
     const displayAmount = r.amount === null || r.amount === undefined ? '' : r.amount;
@@ -731,13 +874,14 @@
 
     const wrap = rowEl.querySelector('.cat-input-wrap');
     let settleButton = rowEl.querySelector('.settle-btn');
-    const shouldShowSettle = (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number' && r.amount !== 0;
+    const shouldShowSettle = sec !== '-next' &&
+      (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number' && r.amount !== 0;
     if (shouldShowSettle && !settleButton) {
       settleButton = document.createElement('button');
       settleButton.type = 'button';
       settleButton.className = 'settle-btn';
       settleButton.textContent = settleButtonLabel(r.type);
-      settleButton.addEventListener('click', function () { settleEntryClick(r.categoryId, r.name, input, settleButton, rowEl); });
+      settleButton.addEventListener('click', function () { settleEntryClick(r.categoryId, r.name, input, settleButton, rowEl, sec); });
       wrap.appendChild(settleButton);
     } else if (!shouldShowSettle && settleButton) {
       settleButton.remove();
@@ -745,12 +889,12 @@
     renderProjectionCard();
   }
 
-  /** 保存/精算の後、指定した複数カテゴリをサーバーから取り直してDOMを更新する(1回のfetchで済ませる)。 */
-  async function refreshRows(categoryIds) {
-    const data = await apiGet('monthValues', { month: DISPLAY_MONTH });
+  /** 保存/精算の後、指定したセクションの複数カテゴリをサーバーから取り直してDOMを更新する(1回のfetchで済ませる)。 */
+  async function refreshRows(categoryIds, sec) {
+    const data = await apiGet('monthValues', { month: sectionMonth(sec) });
     categoryIds.forEach(function (categoryId) {
       const rowData = data.rows.find(function (r) { return r.categoryId === categoryId; });
-      if (rowData) updateRowDom(rowData);
+      if (rowData) updateRowDom(rowData, sec);
     });
   }
   /**
@@ -758,24 +902,35 @@
    * まとめて保存する。行ごとに保存ボタンを押す手間をなくすため、入力画面には
    * この1つの「まとめて保存」ボタンだけを置く(現金へ反映=精算は別のボタンとして残す)。
    */
-  function setSaveInFlightControlsDisabled(disabled) {
+  function setSaveInFlightControlsDisabled(disabled, sec) {
     // 保存の往復中(数秒〜十数秒)に月を切り替えられると、後続のPOSTが別の月に書き込まれてしまう。
-    // 精算(現金へ反映)も、保存中の行と同じ残高行を同時に書き換えうるため、あわせて止める。
-    // 月ナビは再有効化時、境界(先月24ヶ月前/来月まで)に応じた正しいdisabled状態に戻す必要があるため、
+    // 月ナビがあるのは上段(今月・可変)セクションだけなので、そちらの保存中だけ止める。
+    // 月ナビ再有効化時、境界(先月24ヶ月前/来月まで)に応じた正しいdisabled状態に戻す必要があるため、
     // ここでは一律trueにするだけにして、falseへの戻しはupdateMonthNavButtons()に任せる。
-    document.getElementById('month-prev').disabled = disabled;
-    document.getElementById('month-next').disabled = disabled;
-    document.querySelectorAll('.settle-btn').forEach(function (btn) { btn.disabled = disabled; });
+    if (sec !== '-next') {
+      document.getElementById('month-prev').disabled = disabled;
+      document.getElementById('month-next').disabled = disabled;
+    }
+    // 精算(引き落とし済/入金済み)、および「もう一方のセクションの保存ボタン」は、
+    // どちらのセクションで保存中でも同じ残高行を書き換えうるため、件数カウンタで管理する。
+    // 片方の保存が終わってももう片方がまだ飛んでいれば、無効のままにしておく必要がある
+    // (単純なbool代入だと、片方の終了がもう片方の飛行中フラグを消してしまう)。
+    SAVE_IN_FLIGHT_COUNT = Math.max(0, SAVE_IN_FLIGHT_COUNT + (disabled ? 1 : -1));
+    const anyInFlight = SAVE_IN_FLIGHT_COUNT > 0;
+    document.querySelectorAll('.settle-btn').forEach(function (btn) { btn.disabled = anyInFlight; });
+    const otherSaveButton = document.getElementById('save-all-button' + (sec === '-next' ? '' : '-next'));
+    if (otherSaveButton) otherSaveButton.disabled = anyInFlight;
   }
 
-  async function saveAllChanges() {
-    const button = document.getElementById('save-all-button');
-    const messageEl = document.getElementById('save-all-message');
-    const rows = [...document.querySelectorAll('.cat-row')];
+  async function saveAllChanges(sec) {
+    const button = document.getElementById('save-all-button' + sec);
+    const messageEl = document.getElementById('save-all-message' + sec);
+    const container = sectionContainer(sec);
+    const rows = [...container.querySelectorAll('.cat-row')];
     const changed = [];
     const invalid = [];
 
-    document.querySelectorAll('.cat-row.invalid-row').forEach(function (el) { el.classList.remove('invalid-row'); });
+    container.querySelectorAll('.cat-row.invalid-row').forEach(function (el) { el.classList.remove('invalid-row'); });
     const invalidRows = [];
 
     rows.forEach(function (rowEl) {
@@ -809,11 +964,11 @@
       return;
     }
 
-    // 保存対象の月をここで固定する。保存中にユーザーが月を送っても、この一括保存は
-    // 開始時点の月にだけ書き込む(DISPLAY_MONTHを毎回参照すると誤った月に書き込まれる)。
-    const targetMonth = DISPLAY_MONTH;
+    // 保存対象の月をここで固定する。保存中にユーザーが(上段セクションの)月を送っても、
+    // この一括保存は開始時点の月にだけ書き込む(毎回sectionMonth()を参照すると誤った月に書き込まれる)。
+    const targetMonth = sectionMonth(sec);
     button.disabled = true;
-    setSaveInFlightControlsDisabled(true);
+    setSaveInFlightControlsDisabled(true, sec);
     messageEl.textContent = '保存中…';
     messageEl.className = 'message';
 
@@ -839,8 +994,8 @@
         }
       }
     } finally {
-      setSaveInFlightControlsDisabled(false);
-      updateMonthNavButtons(); // 元のdisabled状態(月の境界)を再計算し直す
+      setSaveInFlightControlsDisabled(false, sec);
+      if (sec !== '-next') updateMonthNavButtons(); // 元のdisabled状態(月の境界)を再計算し直す
       button.disabled = false;
     }
 
@@ -854,18 +1009,19 @@
 
     // 保存中に月が切り替えられていたら、今表示している月とは違う月を更新したことになるので
     // 今の画面には反映しない(誤って別の月の値で上書き表示するのを防ぐ)
-    if (DISPLAY_MONTH === targetMonth && successCount > 0) {
+    if (sectionMonth(sec) === targetMonth && successCount > 0) {
       try {
         await refreshRows(changed.filter(function (c) { return failedNames.indexOf(c.rowEl.getAttribute('data-category-name')) === -1; })
-          .map(function (c) { return c.categoryId; }));
+          .map(function (c) { return c.categoryId; }), sec);
       } catch (e) {
         messageEl.textContent += '(表示の更新に失敗しました。再読み込みしてください)';
       }
     }
   }
-  document.getElementById('save-all-button').addEventListener('click', saveAllChanges);
+  document.getElementById('save-all-button').addEventListener('click', function () { saveAllChanges(''); });
+  document.getElementById('save-all-button-next').addEventListener('click', function () { saveAllChanges('-next'); });
 
-  async function settleEntryClick(categoryId, categoryName, input, button, rowEl) {
+  async function settleEntryClick(categoryId, categoryName, input, button, rowEl, sec) {
     const categoryType = rowEl.getAttribute('data-category-type');
     const isExpense = categoryType === '支出';
     const savedAmountRaw = rowEl.getAttribute('data-saved-amount');
@@ -885,19 +1041,21 @@
       return;
     }
 
-    // 確認ダイアログにbefore/afterの実額を出すため、画面上の残高行(現在の現金)を直接見に行く
-    const balanceRow = document.querySelector('.cat-row[data-category-type="残高"]');
+    // 確認ダイアログにbefore/afterの実額を出すため、画面上の残高行(現在の現金)を直接見に行く。
+    // 精算対象のセクション(今月/来月)側の残高行を見る(セクションをまたいで参照しない)。
+    const balanceRow = sectionContainer(sec).querySelector('.cat-row[data-category-type="残高"]');
     const balanceSavedRaw = balanceRow ? balanceRow.getAttribute('data-saved-amount') : '';
     const hasCurrentMonthBalance = balanceSavedRaw !== '' && balanceSavedRaw !== null && balanceSavedRaw !== undefined;
     const delta = isExpense ? -savedAmount : savedAmount;
     let balanceLine;
     let fallbackWarning = '';
+    const targetMonthLabel = formatMonthLabel(sectionMonth(sec));
     if (hasCurrentMonthBalance) {
       const before = Number(balanceSavedRaw);
       balanceLine = '  現在の現金　' + formatYen(before) + ' → ' + formatYen(before + delta) + '\n';
     } else {
-      balanceLine = '  現在の現金（今月まだ未入力のため、先月の値を基準に計算されます）\n';
-      fallbackWarning = '※ 今月の現在の現金がまだ未入力です。先月の値を基準に計算します。\n\n';
+      balanceLine = '  現在の現金（' + targetMonthLabel + '分がまだ未入力のため、直近の値を基準に計算されます）\n';
+      fallbackWarning = '※ ' + targetMonthLabel + 'の現在の現金がまだ未入力です。直近の値を基準に計算します。\n\n';
     }
 
     // まだユーザーが確認していない自動仮入力のまま精算しようとしていないか警告する
@@ -907,6 +1065,7 @@
         '実際の金額と異なる可能性があります。\n\n'
       : '';
 
+    const monthLabelForMsg = sec === '-next' ? '来月末' : '月末';
     const verb = isExpense ? '引き落とされました' : '入金されました';
     const notYetVerb = isExpense ? '引き落とされていない' : '入金されていない';
     const confirmed = confirm(
@@ -914,15 +1073,15 @@
       categoryName + 'の' + formatYen(savedAmount) + 'は、もう' + verb + 'か？\n\n' +
       '「OK」を押すと\n' +
       balanceLine +
-      '  ' + categoryName + 'の今月の欄は0円(精算済み)になります\n' +
-      '  月末の残り見込みは変わりません(「予定」だったお金が「もう動いたお金」に区分が変わるだけです)\n\n' +
+      '  ' + categoryName + 'の' + targetMonthLabel + '分の欄は0円(精算済み)になります\n' +
+      '  ' + monthLabelForMsg + 'の残り見込みは変わりません(「予定」だったお金が「もう動いたお金」に区分が変わるだけです)\n\n' +
       'まだ' + notYetVerb + 'なら「キャンセル」を押してください。'
     );
     if (!confirmed) return;
     button.disabled = true;
     let result;
     try {
-      result = await apiPost({ action: 'settleEntry', categoryId: categoryId, month: DISPLAY_MONTH });
+      result = await apiPost({ action: 'settleEntry', categoryId: categoryId, month: sectionMonth(sec) });
     } catch (e) {
       alert(settleButtonLabel(categoryType) + 'の処理に失敗しました: ' + e.message);
       button.disabled = false;
@@ -932,11 +1091,20 @@
     // 他の行に入力中の未保存値を消してしまうため避ける)。表示更新の失敗は精算の成否とは
     // 別に扱う(精算自体は既に成功しているため、ボタンを再度有効化して二重実行を招かない)。
     try {
-      await refreshRows([result.clearedCategoryId, result.balanceCategoryId]);
+      await refreshRows([result.clearedCategoryId, result.balanceCategoryId], sec);
     } catch (e) {
       alert('処理は完了しましたが、表示の更新に失敗しました。画面を再読み込みしてください。');
       button.disabled = false;
     }
+  }
+
+  // 来月セクションは「今月」を表示しているときだけ見せる。過去/未来の任意の月を見返している
+  // ときに、実在の暦月としての「来月」を同時に出すと文脈が食い違う(3ヶ月前を見ているのに
+  // すぐ下に来月の入力欄がある、という状態を避ける)。上段を▶で来月まで送った場合も、
+  // 同じ月を2つのセクションで同時編集できてしまう事故を防ぐためここで隠す。
+  function updateNextSectionVisibility() {
+    const isCurrent = !!(DISPLAY_MONTH && DISPLAY_MONTH === SERVER_CURRENT_MONTH);
+    document.getElementById('next-month-section').style.display = isCurrent ? '' : 'none';
   }
 
   async function loadInputMonth(month) {
@@ -947,13 +1115,44 @@
       if (!SERVER_CURRENT_MONTH) SERVER_CURRENT_MONTH = data.month; // 初回のみ「今月」の基準にする
       DISPLAY_MONTH = data.month;
       updateMonthNavButtons();
-      renderCategoryGroups(data.rows);
+      document.getElementById('save-all-button').textContent = formatMonthLabel(DISPLAY_MONTH) + '分を保存';
+      updateNextSectionVisibility();
+      renderCategoryGroups(data.rows, '');
     } catch (e) {
       // 初回読み込みに失敗すると月ナビが無効のまま復帰手段が無くなるため、再読み込みボタンを出す
       container.innerHTML = '<div class="empty-state">読み込みに失敗しました: ' + escapeHtml(e.message) + '</div>' +
         '<button type="button" class="add-cat-toggle" id="retry-load-button">再読み込み</button>';
       const retryButton = document.getElementById('retry-load-button');
       if (retryButton) retryButton.addEventListener('click', function () { loadInputMonth(month); });
+    }
+  }
+
+  /**
+   * 来月セクションを読み込む。今月(SERVER_CURRENT_MONTH)を基準に固定でその翌月を表示する
+   * (上段セクションが◀▶でどの月に移動していても影響しない)。SERVER_CURRENT_MONTHが
+   * まだ確定していなければ、上段の読み込みからやり直す(初回読み込み失敗時に永久に
+   * 「来月(—)」のまま固まるのを防ぐ自己修復)。
+   */
+  async function loadNextMonthSection() {
+    if (!SERVER_CURRENT_MONTH) {
+      await loadInputMonth();
+      if (!SERVER_CURRENT_MONTH) return; // それでも失敗していれば上段のエラー表示に譲る
+    }
+    const container = document.getElementById('category-groups-next');
+    const heading = document.getElementById('next-month-heading');
+    container.innerHTML = '<div class="empty-state">読み込み中…</div>';
+    try {
+      const targetMonth = addMonths(SERVER_CURRENT_MONTH, 1);
+      const data = await apiGet('monthValues', { month: targetMonth });
+      NEXT_MONTH = data.month;
+      heading.textContent = formatMonthLabel(NEXT_MONTH) + 'の予定を先に入力';
+      document.getElementById('save-all-button-next').textContent = formatMonthLabel(NEXT_MONTH) + '分を保存';
+      renderCategoryGroups(data.rows, '-next');
+    } catch (e) {
+      container.innerHTML = '<div class="empty-state">読み込みに失敗しました: ' + escapeHtml(e.message) + '</div>' +
+        '<button type="button" class="add-cat-toggle" id="retry-load-next-button">再読み込み</button>';
+      const retryButton = document.getElementById('retry-load-next-button');
+      if (retryButton) retryButton.addEventListener('click', loadNextMonthSection);
     }
   }
 
@@ -1036,7 +1235,8 @@
       defaultValueInput.value = '';
       defaultValueInput.disabled = false;
       document.getElementById('add-cat-form').classList.remove('visible');
-      await loadInputMonth(DISPLAY_MONTH);
+      await Promise.all([loadInputMonth(DISPLAY_MONTH), loadNextMonthSection(), loadCategoriesCache()]);
+      renderProjectionCard(); // 新カテゴリのdefaultValue/autoCarryを来月見込みの計算にも反映する
     } catch (e) {
       messageEl.textContent = '追加に失敗しました: ' + e.message;
       messageEl.className = 'message error';
@@ -1189,8 +1389,14 @@
   }
 
   // ---- 初期化 ----
-  // ボタン操作を待たず、ページ読み込み直後にバックグラウンドで取得を開始する
-  loadInputMonth();
+  // ボタン操作を待たず、ページ読み込み直後にバックグラウンドで取得を開始する。
+  // 来月セクション・カテゴリキャッシュはSERVER_CURRENT_MONTHが確定してから
+  // (=上段の初回読み込み完了後)取得する。両方揃ってから見込みカードを最終計算し直す
+  // (どちらか一方が先に終わっても、renderCategoryGroups内の中間renderProjectionCard呼び出しで
+  // 「読み込み中…」表示にはなるので、体験としては問題ない)。
+  loadInputMonth().then(function () {
+    return Promise.all([loadCategoriesCache(), loadNextMonthSection()]);
+  }).then(renderProjectionCard);
 </script>
 </body>
 </html>
