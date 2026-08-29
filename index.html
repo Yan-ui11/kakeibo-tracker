@@ -685,6 +685,13 @@
   document.getElementById('category-groups').addEventListener('input', function (e) {
     if (e.target.classList.contains('amount-input')) renderProjectionCard();
   });
+  // 金額欄をタップ/フォーカスした瞬間に、既存の値を全選択状態にする。
+  // 前月から自動で引き継がれた数字や、前回入力した数字の上にそのまま数字を打てば
+  // 全部が上書きされるので、都度クリアする手間がなくなる。
+  // focusはバブリングしないためfocusinで委譲する。
+  document.getElementById('category-groups').addEventListener('focusin', function (e) {
+    if (e.target.classList.contains('amount-input')) e.target.select();
+  });
 
   /**
    * 1行だけをサーバーの最新値で更新する(全体を再描画すると、他の行にまだ保存していない
