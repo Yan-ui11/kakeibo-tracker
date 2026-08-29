@@ -160,6 +160,24 @@
   .month-nav button:disabled { opacity: 0.35; }
   .month-nav .month-label { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; }
 
+  /* 月末の残り見込みカード */
+  .projection-card {
+    border-radius: 16px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+    background: var(--glass-bg-strong);
+    border: 1px solid var(--glass-border);
+  }
+  .projection-label { font-size: 0.75rem; color: var(--text-dim); font-weight: 600; }
+  .projection-value { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
+  .projection-breakdown { font-size: 0.72rem; color: var(--text-dim); }
+  .projection-note { font-size: 0.68rem; color: var(--accent); margin-top: 6px; line-height: 1.4; }
+  .projection-empty { font-size: 0.85rem; color: var(--text-dim); padding: 6px 0 2px; }
+
+  .cat-row.invalid-row { outline: 2px solid var(--danger); border-radius: 10px; }
+
+  .build-stamp { text-align: center; font-size: 0.65rem; color: var(--text-dim); opacity: 0.6; margin-top: 18px; }
+
   /* カテゴリグループ */
   .group-title {
     font-size: 0.78rem;
@@ -320,6 +338,11 @@
     <div class="month-label" id="month-label">—</div>
     <button type="button" id="month-next" disabled>▶</button>
   </div>
+  <div class="projection-card glass" id="projection-card">
+    <div class="projection-label">月末の残り見込み</div>
+    <div class="projection-empty">読み込み中…</div>
+  </div>
+
   <div id="category-groups"><div class="empty-state">読み込み中…</div></div>
 
   <button type="button" class="primary-button" id="save-all-button">まとめて保存</button>
@@ -363,6 +386,8 @@
   <div class="review-section-title" style="margin-top:20px;">カテゴリ別一覧</div>
   <div id="pivot-table"><div class="empty-state">読み込み中…</div></div>
 </section>
+
+<div class="build-stamp">build 2026-08-29 17:00</div>
 
 <script>
   // GASのWeb App URL。デプロイIDが変わったらここを更新する(clasp deploy -i で同一IDを維持していれば変更不要)
@@ -458,12 +483,14 @@
   function isMachineGeneratedMemo(memo) {
     return isProvisionalMemo(memo) || /^\(精算: /.test(memo || '');
   }
-  // 全角数字・全角マイナス・カンマを正規化してから数値として扱う(日本語キーボードでの入力に配慮)
+  // 全角数字・全角マイナス・カンマ・円記号・空白を正規化してから数値として扱う
+  // (日本語キーボードでの入力や、金額を「¥15,415」のようにコピペした場合に配慮)
   function normalizeNumericInput(raw) {
     return raw
       .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
       .replace(/[－−ー―‐]/g, '-')
-      .replace(/,/g, '')
+      .replace(/[,，、]/g, '')
+      .replace(/[¥￥円\s]/g, '')
       .trim();
   }
   // 金額入力欄の文字列を検証する。空文字は「クリア」として許可(ok:true, value:'')。
@@ -505,25 +532,37 @@
     document.getElementById('month-label').textContent = formatMonthLabel(DISPLAY_MONTH);
   }
 
-  // 差引(収支どちらもありうる)と残高(実測値。精算でマイナスにもなりうる)だけ負数を許可する。
+  // 差引(収支どちらもありうる)と残高(実測値。精算でマイナスにもなりうる)だけ負数の保存を許可する。
   // 収入・支出は常に0以上。
-  function allowsNegativeInput(type) {
+  function allowsNegativeValue(type) {
     return type === '差引' || type === '残高';
+  }
+  // キーボード種別は負数許可とは分けて考える。残高は「負数になりうる」が実際に手で負数を
+  // 打つのは稀(精算で自動的にマイナスになるだけ)なので、iOSの数字専用キーパッドのままにする。
+  // フルキーボード(マイナス記号あり)が必要なのは差引だけ。数字専用キーパッドだと全角記号
+  // (，、¥など)を打てないため、その手の入力ミスによる保存失敗も同時に防げる。
+  function usesFullKeyboard(type) {
+    return type === '差引';
+  }
+
+  // 支出は「引き落とし済」、収入は「入金済み」。精算(settleEntry)自体は同じ処理だが、
+  // 実際に何が起きたかをボタンの文言で正しく言い分ける。
+  function settleButtonLabel(type) {
+    return type === '支出' ? '引き落とし済' : '入金済み';
   }
 
   function buildCategoryRowHtml(r) {
     const displayAmount = r.amount === null || r.amount === undefined ? '' : r.amount;
     const savedAmountAttr = r.amount === null || r.amount === undefined ? '' : r.amount;
     // 差引・残高は実際の符号で色を変える。収入・支出は種別固定の色。
-    const rowTypeClass = allowsNegativeInput(r.type)
+    const rowTypeClass = allowsNegativeValue(r.type)
       ? (typeof r.amount === 'number' && r.amount < 0 ? 'type-expense' : typeClass(r.type))
       : typeClass(r.type);
-    // 支出カテゴリで既に金額が保存済みのときだけ「現金へ反映」ボタンを出す。
-    // 実際に引き落とされたタイミングで押すと、現在の現金からこの金額を差し引いて、この欄を空に戻す。
-    const showSettleButton = r.type === '支出' && typeof r.amount === 'number';
+    // 支出・収入で既に金額が保存済みのときだけ精算ボタンを出す。実際にお金が動いたタイミングで
+    // 押すと、現在の現金にこの金額を反映(支出は差し引き・収入は足し込み)して、この欄を空に戻す。
+    const showSettleButton = (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number';
     const provisional = isProvisionalMemo(r.memo);
-    // 差引・残高はiOSの純粋な数字キーパッド(マイナス記号がない)ではなくフルキーボードを出す
-    const inputAttrs = allowsNegativeInput(r.type) ? 'inputmode="text"' : 'inputmode="numeric" pattern="[0-9]*"';
+    const inputAttrs = usesFullKeyboard(r.type) ? 'inputmode="text"' : 'inputmode="numeric" pattern="[0-9]*"';
     // 金額入力欄そのものの文字色もラベルと同じ種別色にする(ラベルだけでなく数字自体も赤/黒にする)
     return '' +
       '<div class="cat-row" data-category-id="' + escapeHtml(r.categoryId) + '" data-category-name="' + escapeHtml(r.name) + '"' +
@@ -536,7 +575,7 @@
         '</div>' +
         '<div class="cat-input-wrap">' +
           '<input type="text" ' + inputAttrs + ' class="amount-input ' + rowTypeClass + '" value="' + escapeHtml(displayAmount) + '">' +
-          (showSettleButton ? '<button type="button" class="settle-btn">現金へ反映</button>' : '') +
+          (showSettleButton ? '<button type="button" class="settle-btn">' + settleButtonLabel(r.type) + '</button>' : '') +
         '</div>' +
       '</div>';
   }
@@ -568,7 +607,84 @@
     });
     container.innerHTML = html;
     container.querySelectorAll('.cat-row').forEach(bindCategoryRow);
+    renderProjectionCard();
   }
+
+  /**
+   * 「月末の残り見込み」= 現在の現金(残高) + 今月まだ精算していない収入・支出の合計。
+   * 画面上の入力欄の値(保存前でもよい)からその場で計算する。API呼び出しは発生しない。
+   * 精算(引き落とし済/入金済み)を押すと、対象カテゴリの欄が空になり残高側に反映されるため、
+   * この合計自体は変化しない(「予定」区分から「実績」区分に移るだけ)。
+   */
+  function computeProjection() {
+    const rows = [...document.querySelectorAll('.cat-row')];
+    const balanceRow = rows.find(function (r) { return r.getAttribute('data-category-type') === '残高'; });
+    if (!balanceRow) return null;
+    const balanceParsed = parseAmountInput(balanceRow.querySelector('.amount-input').value, true);
+    if (!balanceParsed.ok || balanceParsed.value === '') return { hasBalance: false };
+
+    let incomingTotal = 0;
+    let outgoingTotal = 0;
+    const provisionalParts = [];
+    rows.forEach(function (rowEl) {
+      const type = rowEl.getAttribute('data-category-type');
+      if (type === '残高') return;
+      const input = rowEl.querySelector('.amount-input');
+      const parsed = parseAmountInput(input.value, allowsNegativeValue(type));
+      if (!parsed.ok || parsed.value === '') return;
+      const amount = parsed.value;
+      if (type === '支出') {
+        outgoingTotal += amount;
+      } else {
+        incomingTotal += amount; // 収入・差引(差引は符号込みの値をそのまま加算)
+      }
+      // 保存済みの値のまま(まだ手で直していない)自動仮入力は、見込みの精度に注意書きを出す対象にする
+      const memo = rowEl.getAttribute('data-saved-memo') || '';
+      const savedAmountRaw = rowEl.getAttribute('data-saved-amount') || '';
+      if (isProvisionalMemo(memo) && input.value.trim() === savedAmountRaw) {
+        provisionalParts.push({ name: rowEl.getAttribute('data-category-name'), amount: amount });
+      }
+    });
+
+    return {
+      hasBalance: true,
+      balance: balanceParsed.value,
+      incomingTotal: incomingTotal,
+      outgoingTotal: outgoingTotal,
+      projection: balanceParsed.value + incomingTotal - outgoingTotal,
+      provisionalParts: provisionalParts
+    };
+  }
+
+  function renderProjectionCard() {
+    const card = document.getElementById('projection-card');
+    if (!card) return;
+    const result = computeProjection();
+    const label = (DISPLAY_MONTH && DISPLAY_MONTH === SERVER_CURRENT_MONTH) ? '月末の残り見込み' : 'この月の見込み残高';
+    if (!result || !result.hasBalance) {
+      card.innerHTML =
+        '<div class="projection-label">' + label + '</div>' +
+        '<div class="projection-empty">現在の現金を入力すると、見込み額が出ます</div>';
+      return;
+    }
+    let html =
+      '<div class="projection-label">' + label + '</div>' +
+      '<div class="projection-value">' + formatYen(result.projection) + '</div>' +
+      '<div class="projection-breakdown">現在の現金 ' + formatYen(result.balance) +
+        ' ＋ これから入る ' + formatYen(result.incomingTotal) +
+        ' − これから出る ' + formatYen(result.outgoingTotal) + '</div>';
+    if (result.provisionalParts.length > 0) {
+      const parts = result.provisionalParts.map(function (p) {
+        return escapeHtml(p.name) + ' ' + formatYen(p.amount);
+      }).join('・');
+      html += '<div class="projection-note">※ ' + parts + ' はまだ仮の見込み額です。実際の金額に直すと精度が上がります。</div>';
+    }
+    card.innerHTML = html;
+  }
+  // 入力中(未保存)の値でも見込みがその場で更新されるよう、金額欄の入力を横取りする
+  document.getElementById('category-groups').addEventListener('input', function (e) {
+    if (e.target.classList.contains('amount-input')) renderProjectionCard();
+  });
 
   /**
    * 1行だけをサーバーの最新値で更新する(全体を再描画すると、他の行にまだ保存していない
@@ -587,7 +703,7 @@
     // 差引・残高は符号によって色が変わるため、保存し直した後も追随させる。
     // ラベルだけでなく金額入力欄自体の文字色も揃える。
     const nameEl = rowEl.querySelector('.cat-name');
-    const rowTypeClass = allowsNegativeInput(r.type)
+    const rowTypeClass = allowsNegativeValue(r.type)
       ? (typeof r.amount === 'number' && r.amount < 0 ? 'type-expense' : typeClass(r.type))
       : typeClass(r.type);
     nameEl.className = 'cat-name ' + rowTypeClass;
@@ -600,17 +716,18 @@
 
     const wrap = rowEl.querySelector('.cat-input-wrap');
     let settleButton = rowEl.querySelector('.settle-btn');
-    const shouldShowSettle = r.type === '支出' && typeof r.amount === 'number';
+    const shouldShowSettle = (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number';
     if (shouldShowSettle && !settleButton) {
       settleButton = document.createElement('button');
       settleButton.type = 'button';
       settleButton.className = 'settle-btn';
-      settleButton.textContent = '現金へ反映';
+      settleButton.textContent = settleButtonLabel(r.type);
       settleButton.addEventListener('click', function () { settleEntryClick(r.categoryId, r.name, input, settleButton, rowEl); });
       wrap.appendChild(settleButton);
     } else if (!shouldShowSettle && settleButton) {
       settleButton.remove();
     }
+    renderProjectionCard();
   }
 
   /** 保存/精算の後、指定した複数カテゴリをサーバーから取り直してDOMを更新する(1回のfetchで済ませる)。 */
@@ -643,6 +760,9 @@
     const changed = [];
     const invalid = [];
 
+    document.querySelectorAll('.cat-row.invalid-row').forEach(function (el) { el.classList.remove('invalid-row'); });
+    const invalidRows = [];
+
     rows.forEach(function (rowEl) {
       const categoryType = rowEl.getAttribute('data-category-type');
       const input = rowEl.querySelector('.amount-input');
@@ -650,9 +770,10 @@
       // 未編集の行は検証すらしない。シートを手編集した結果、他の行の値が万一パース不能に
       // なっていても、それだけで「まとめて保存」全体が使えなくなる事故を避けるため。
       if (input.value.trim() === savedAmountRaw) return;
-      const parsed = parseAmountInput(input.value, allowsNegativeInput(categoryType));
+      const parsed = parseAmountInput(input.value, allowsNegativeValue(categoryType));
       if (!parsed.ok) {
         invalid.push(rowEl.getAttribute('data-category-name'));
+        invalidRows.push(rowEl);
         return;
       }
       const normalizedCurrent = parsed.value === '' ? '' : String(parsed.value);
@@ -663,6 +784,8 @@
     if (invalid.length > 0) {
       messageEl.textContent = invalid.join('、') + ' の金額が正しくありません(整数で入力してください)';
       messageEl.className = 'message error';
+      invalidRows.forEach(function (rowEl) { rowEl.classList.add('invalid-row'); });
+      if (invalidRows[0]) invalidRows[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
     if (changed.length === 0) {
@@ -728,6 +851,8 @@
   document.getElementById('save-all-button').addEventListener('click', saveAllChanges);
 
   async function settleEntryClick(categoryId, categoryName, input, button, rowEl) {
+    const categoryType = rowEl.getAttribute('data-category-type');
+    const isExpense = categoryType === '支出';
     const savedAmountRaw = rowEl.getAttribute('data-saved-amount');
     if (savedAmountRaw === '' || savedAmountRaw === null) {
       alert('先にこのカテゴリの金額を「まとめて保存」で保存してください');
@@ -737,23 +862,46 @@
     // 入力欄に保存していない変更が残っている場合は、確認ダイアログの金額とズレるため止める
     const currentParsed = parseAmountInput(input.value, false);
     const currentNormalized = currentParsed.ok && currentParsed.value !== '' ? String(currentParsed.value) : '';
-    if (currentNormalized !== '' && currentNormalized !== String(savedAmount)) {
+    if (currentNormalized === '' || currentNormalized !== String(savedAmount)) {
       alert(
-        '入力欄が保存済みの金額(' + formatYen(savedAmount) + ')と異なります。\n' +
-        '先に「まとめて保存」してから「現金へ反映」を押してください。'
+        '入力欄が保存済みの金額(' + formatYen(savedAmount) + ')と異なります(空欄になっている場合も含む)。\n' +
+        '先に「まとめて保存」してから「' + settleButtonLabel(categoryType) + '」を押してください。'
       );
       return;
     }
+
+    // 確認ダイアログにbefore/afterの実額を出すため、画面上の残高行(現在の現金)を直接見に行く
+    const balanceRow = document.querySelector('.cat-row[data-category-type="残高"]');
+    const balanceSavedRaw = balanceRow ? balanceRow.getAttribute('data-saved-amount') : '';
+    const hasCurrentMonthBalance = balanceSavedRaw !== '' && balanceSavedRaw !== null && balanceSavedRaw !== undefined;
+    const delta = isExpense ? -savedAmount : savedAmount;
+    let balanceLine;
+    let fallbackWarning = '';
+    if (hasCurrentMonthBalance) {
+      const before = Number(balanceSavedRaw);
+      balanceLine = '  現在の現金　' + formatYen(before) + ' → ' + formatYen(before + delta) + '\n';
+    } else {
+      balanceLine = '  現在の現金（今月まだ未入力のため、先月の値を基準に計算されます）\n';
+      fallbackWarning = '※ 今月の現在の現金がまだ未入力です。先月の値を基準に計算します。\n\n';
+    }
+
     // まだユーザーが確認していない自動仮入力のまま精算しようとしていないか警告する
     const savedMemo = rowEl.getAttribute('data-saved-memo') || '';
     const provisionalWarning = isProvisionalMemo(savedMemo)
       ? 'この金額はまだ自動で仮入力されたもの(' + (savedMemo === '(既定値)' ? '既定値' : '自動繰越') + ')です。' +
-        '実際の請求額と異なる可能性があります。\n\n'
+        '実際の金額と異なる可能性があります。\n\n'
       : '';
+
+    const verb = isExpense ? '引き落とされました' : '入金されました';
+    const notYetVerb = isExpense ? '引き落とされていない' : '入金されていない';
     const confirmed = confirm(
-      provisionalWarning +
-      categoryName + 'の' + formatYen(savedAmount) + 'を現在の現金から差し引いて、この欄を空に戻します。\n' +
-      '実際にこの金額が引き落とされた後に押してください。よろしいですか？'
+      provisionalWarning + fallbackWarning +
+      categoryName + 'の' + formatYen(savedAmount) + 'は、もう' + verb + 'か？\n\n' +
+      '「OK」を押すと\n' +
+      balanceLine +
+      '  ' + categoryName + 'の今月の入力欄は空になります\n' +
+      '  月末の残り見込みは変わりません(「予定」だったお金が「もう動いたお金」に区分が変わるだけです)\n\n' +
+      'まだ' + notYetVerb + 'なら「キャンセル」を押してください。'
     );
     if (!confirmed) return;
     button.disabled = true;
@@ -761,7 +909,7 @@
     try {
       result = await apiPost({ action: 'settleEntry', categoryId: categoryId, month: DISPLAY_MONTH });
     } catch (e) {
-      alert('反映に失敗しました: ' + e.message);
+      alert(settleButtonLabel(categoryType) + 'の処理に失敗しました: ' + e.message);
       button.disabled = false;
       return;
     }
@@ -771,7 +919,7 @@
     try {
       await refreshRows([result.clearedCategoryId, result.balanceCategoryId]);
     } catch (e) {
-      alert('反映は完了しましたが、表示の更新に失敗しました。画面を再読み込みしてください。');
+      alert('処理は完了しましたが、表示の更新に失敗しました。画面を再読み込みしてください。');
       button.disabled = false;
     }
   }
