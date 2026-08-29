@@ -473,15 +473,22 @@
   function isProvisionalMemo(memo) {
     return memo === '(既定値)' || memo === '(自動繰越)';
   }
+  // settleEntryが精算対象カテゴリに付けるメモ。「未入力」ではなく「精算済みで今月はもう
+  // 動きがない0円」であることを示す(仮置きの"guess"ではなく確定値なので、色分けは仮入力とは分ける)。
+  function isSettledMemo(memo) {
+    return memo === '(精算済)';
+  }
   function provisionalLabel(memo) {
     if (memo === '(既定値)') return ' ・仮入力(既定値)';
     if (memo === '(自動繰越)') return ' ・仮入力(自動繰越)';
+    if (isSettledMemo(memo)) return ' ・精算済み';
     return '';
   }
-  // 仮入力タグに加えて、settleEntryが書く精算由来メモ"(精算: ...)"も機械生成メモとして扱う。
-  // ユーザーが実際に保存し直した時点で、これらは事実と食い違う古い注記になるため消してよい。
+  // 仮入力タグ・精算済みタグに加えて、settleEntryが残高側に書く精算由来メモ"(精算: ...)"も
+  // 機械生成メモとして扱う。ユーザーが実際に保存し直した時点で、これらは事実と食い違う
+  // 古い注記になるため消してよい。
   function isMachineGeneratedMemo(memo) {
-    return isProvisionalMemo(memo) || /^\(精算: /.test(memo || '');
+    return isProvisionalMemo(memo) || isSettledMemo(memo) || /^\(精算: /.test(memo || '');
   }
   // 全角数字・全角マイナス・カンマ・円記号・空白を正規化してから数値として扱う
   // (日本語キーボードでの入力や、金額を「¥15,415」のようにコピペした場合に配慮)
@@ -558,9 +565,10 @@
     const rowTypeClass = allowsNegativeValue(r.type)
       ? (typeof r.amount === 'number' && r.amount < 0 ? 'type-expense' : typeClass(r.type))
       : typeClass(r.type);
-    // 支出・収入で既に金額が保存済みのときだけ精算ボタンを出す。実際にお金が動いたタイミングで
-    // 押すと、現在の現金にこの金額を反映(支出は差し引き・収入は足し込み)して、この欄を空に戻す。
-    const showSettleButton = (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number';
+    // 支出・収入で、0以外の金額が保存済みのときだけ精算ボタンを出す。実際にお金が動いたタイミングで
+    // 押すと、現在の現金にこの金額を反映(支出は差し引き・収入は足し込み)して、この欄を0円にする。
+    // 0円(未入力または精算済み)には精算するものが無いのでボタンは出さない。
+    const showSettleButton = (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number' && r.amount !== 0;
     const provisional = isProvisionalMemo(r.memo);
     const inputAttrs = usesFullKeyboard(r.type) ? 'inputmode="text"' : 'inputmode="numeric" pattern="[0-9]*"';
     // 金額入力欄そのものの文字色もラベルと同じ種別色にする(ラベルだけでなく数字自体も赤/黒にする)
@@ -723,7 +731,7 @@
 
     const wrap = rowEl.querySelector('.cat-input-wrap');
     let settleButton = rowEl.querySelector('.settle-btn');
-    const shouldShowSettle = (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number';
+    const shouldShowSettle = (r.type === '支出' || r.type === '収入') && typeof r.amount === 'number' && r.amount !== 0;
     if (shouldShowSettle && !settleButton) {
       settleButton = document.createElement('button');
       settleButton.type = 'button';
@@ -906,7 +914,7 @@
       categoryName + 'の' + formatYen(savedAmount) + 'は、もう' + verb + 'か？\n\n' +
       '「OK」を押すと\n' +
       balanceLine +
-      '  ' + categoryName + 'の今月の入力欄は空になります\n' +
+      '  ' + categoryName + 'の今月の欄は0円(精算済み)になります\n' +
       '  月末の残り見込みは変わりません(「予定」だったお金が「もう動いたお金」に区分が変わるだけです)\n\n' +
       'まだ' + notYetVerb + 'なら「キャンセル」を押してください。'
     );
